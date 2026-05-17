@@ -2,7 +2,16 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type { Ability, Phase } from '../types';
 import type { Wizard, Priest } from '../utils/jsonParser';
 import type { User } from '../types/user';
+import type { Customization } from '../types/customization';
+import { keyForAbility } from '../types/customization';
+import {
+  moveAbility as moveAbilityRequest,
+  setHidden as setHiddenRequest,
+  setNote as setNoteRequest,
+} from '../utils/customizations';
 import TrackerTemplate from '../components/templates/TrackerTemplate';
+import AbilityContextMenu from '../components/organisms/AbilityContextMenu';
+import NoteEditorModal from '../components/organisms/NoteEditorModal';
 
 const PHASES: Phase[] = [
   'Deployment Phase',
@@ -21,17 +30,34 @@ interface AbilityTrackerScreenProps {
   priests: Priest[];
   onAbilitiesChange: (abilities: Ability[]) => void;
   onBack: () => void;
-  /** Current signed-in user (drives the header user button) */
+  /** Current signed-in user (drives the header user button + customization gate). */
   user: User | null;
-  /** Open the global login modal */
+  /** Open the global login modal. */
   onOpenLogin: () => void;
+  /**
+   * User's ability customizations, loaded by App on sign-in. Empty Map when
+   * signed out or unverified. Mutations happen via the setter below; the
+   * screen does optimistic local updates and reverts on Supabase error.
+   */
+  customizations: Map<string, Customization>;
+  /** Replace the customizations map (optimistic update + revert-on-error). */
+  onCustomizationsChange: (next: Map<string, Customization>) => void;
 }
 
 /**
  * AbilityTrackerScreen — main game tracker page.
- * Acts as the controller layer: holds state (abilities, active phase, deployment state, modal visibility)
- * and computes derived data (sorted sections per phase, visible phases).
- * Renders via TrackerTemplate.
+ *
+ * Controller for: which phase is active, deployment-complete gating, the
+ * keywords modal, the search query, the customization context menu, and the
+ * note editor. Computes the displayed sections by applying (in order):
+ *   1. Search filter
+ *   2. Hidden filter (off unless Show Hidden is on)
+ *   3. Group by phase with custom sort_order applied
+ *   4. Drop empty sections when searching
+ *   5. Narrow to active phase when one is selected
+ *
+ * Renders via TrackerTemplate, with AbilityContextMenu + NoteEditorModal
+ * overlaid for long-press interactions.
  */
 export default function AbilityTrackerScreen({
   abilities: initialAbilities,
@@ -41,6 +67,8 @@ export default function AbilityTrackerScreen({
   onBack,
   user,
   onOpenLogin,
+  customizations,
+  onCustomizationsChange,
 }: AbilityTrackerScreenProps) {
   const [abilities, setAbilities] = useState<Ability[]>(initialAbilities);
   const [activePhase, setActivePhase] = useState<Phase | null>(null);
@@ -49,6 +77,20 @@ export default function AbilityTrackerScreen({
   // Free-text search query from the header search bar. Filters abilities by
   // name, source, keyword, timing, and description (case-insensitive substring).
   const [searchQuery, setSearchQuery] = useState('');
+  /**
+   * When false (default), hidden abilities are filtered out. When true, they
+   * appear with faded styling + a "HIDDEN" badge so the user can find and
+   * unhide them via long-press.
+   */
+  const [showHidden, setShowHidden] = useState(false);
+  /**
+   * The ability currently long-pressed. Null when the context menu is closed.
+   * Kept as a full Ability ref (not just an id) so the menu can show name +
+   * customization without a re-lookup.
+   */
+  const [contextAbility, setContextAbility] = useState<Ability | null>(null);
+  /** The ability currently being edited in the note editor. */
+  const [noteEditAbility, setNoteEditAbility] = useState<Ability | null>(null);
 
   // Sync local state when parent abilities change (e.g., after loading)
   useEffect(() => {
@@ -80,16 +122,32 @@ export default function AbilityTrackerScreen({
     });
   }, [abilities, searchQuery]);
 
-  // Group (filtered) abilities by phase, sorted by priority within each phase
+  // Hide filter — drops customizations.hidden abilities unless the user has
+  // toggled Show Hidden on. We apply it as a separate pass (rather than
+  // baking into filteredAbilities) so the search filter stays purely about
+  // text, and toggling Show Hidden doesn't re-run the haystack regex.
+  const visibleAbilities = useMemo(() => {
+    if (showHidden) return filteredAbilities;
+    return filteredAbilities.filter(a => !customizations.get(keyForAbility(a))?.hidden);
+  }, [filteredAbilities, customizations, showHidden]);
+
+  // Group (filtered + hide-filtered) abilities by phase. Custom-ordered
+  // abilities come first (lowest sortOrder), then the rest in natural
+  // priority order.
   const abilitiesByPhase = useMemo(
     () =>
       visiblePhases.map(phase => ({
         phase,
-        items: filteredAbilities
+        items: visibleAbilities
           .filter(a => a.phase === phase)
-          .sort((a, b) => getAbilitySortPriority(a) - getAbilitySortPriority(b)),
+          .sort((a, b) => {
+            const aOrder = customizations.get(keyForAbility(a))?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+            const bOrder = customizations.get(keyForAbility(b))?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+            if (aOrder !== bOrder) return aOrder - bOrder;
+            return getAbilitySortPriority(a) - getAbilitySortPriority(b);
+          }),
       })),
-    [filteredAbilities, visiblePhases]
+    [visibleAbilities, visiblePhases, customizations]
   );
 
   // When searching, hide phase sections with no matches so the user isn't
@@ -126,13 +184,6 @@ export default function AbilityTrackerScreen({
     onAbilitiesChange(updated);
   }
 
-  /**
-   * Advance the game to the next turn. Resets every ability's `used` flag back
-   * to false EXCEPT for Deployment Phase abilities (which only fire once per
-   * game during deployment and are hidden once that phase is complete). Also
-   * clears the active phase filter so the player sees the full phase grid and
-   * can pick where the new turn begins.
-   */
   function nextTurn() {
     const updated = abilities.map(a =>
       a.phase === 'Deployment Phase' ? a : { ...a, used: false }
@@ -147,29 +198,164 @@ export default function AbilityTrackerScreen({
     setActivePhase(null);
   }
 
+  // ---------------------------------------------------------------------------
+  // Customization handlers (called from AbilityContextMenu / NoteEditorModal)
+  // ---------------------------------------------------------------------------
+  // Each handler does an optimistic local update, then awaits the Supabase
+  // call. On failure we revert the local map and throw so the menu/editor
+  // surfaces the error in its inline UI (no Alert — that's a no-op on web).
+
+  /**
+   * Merge a partial customization into the map under the right key. Used by
+   * setHidden / setNote — both touch a single field on a single row.
+   */
+  function mergeCustomization(ability: Ability, patch: Partial<Customization>): Map<string, Customization> {
+    const next = new Map(customizations);
+    const key = keyForAbility(ability);
+    const existing = next.get(key);
+    next.set(key, {
+      abilityName: ability.name,
+      abilitySource: ability.source ?? '',
+      hidden: existing?.hidden ?? false,
+      note: existing?.note ?? null,
+      sortOrder: existing?.sortOrder ?? null,
+      ...patch,
+    });
+    return next;
+  }
+
+  async function handleToggleHidden(ability: Ability, hidden: boolean) {
+    const prev = customizations;
+    onCustomizationsChange(mergeCustomization(ability, { hidden }));
+    try {
+      await setHiddenRequest(ability, hidden);
+    } catch (err) {
+      onCustomizationsChange(prev);
+      throw err;
+    }
+  }
+
+  async function handleSetNote(ability: Ability, note: string) {
+    const prev = customizations;
+    const trimmed = note.trim();
+    const newNote = trimmed.length > 0 ? trimmed : null;
+    onCustomizationsChange(mergeCustomization(ability, { note: newNote }));
+    try {
+      await setNoteRequest(ability, note);
+    } catch (err) {
+      onCustomizationsChange(prev);
+      throw err;
+    }
+  }
+
+  async function handleMove(ability: Ability, direction: 'up' | 'down') {
+    // Reorder math has to match what the DB side does, so we use the same
+    // phase ordering both for the optimistic update and for the request.
+    const phaseAbilities =
+      displaySections.find(s => s.phase === ability.phase)?.items ?? [];
+    const idx = phaseAbilities.findIndex(a => keyForAbility(a) === keyForAbility(ability));
+    if (idx === -1) return;
+    const swapWith = direction === 'up' ? idx - 1 : idx + 1;
+    if (swapWith < 0 || swapWith >= phaseAbilities.length) return;
+
+    const reordered = [...phaseAbilities];
+    [reordered[idx], reordered[swapWith]] = [reordered[swapWith], reordered[idx]];
+
+    const prev = customizations;
+    const next = new Map(customizations);
+    reordered.forEach((a, i) => {
+      const k = keyForAbility(a);
+      const existing = next.get(k);
+      next.set(k, {
+        abilityName: a.name,
+        abilitySource: a.source ?? '',
+        hidden: existing?.hidden ?? false,
+        note: existing?.note ?? null,
+        sortOrder: i,
+      });
+    });
+    onCustomizationsChange(next);
+
+    try {
+      await moveAbilityRequest(ability, phaseAbilities, direction);
+    } catch (err) {
+      onCustomizationsChange(prev);
+      throw err;
+    }
+  }
+
+  // Position of the context-menu's ability within its phase, so the menu
+  // can grey out Move Up at the top and Move Down at the bottom.
+  const contextPosition = useMemo(() => {
+    if (!contextAbility) return undefined;
+    const phaseItems =
+      displaySections.find(s => s.phase === contextAbility.phase)?.items ?? [];
+    const idx = phaseItems.findIndex(
+      a => keyForAbility(a) === keyForAbility(contextAbility)
+    );
+    if (idx === -1) return undefined;
+    return { index: idx, total: phaseItems.length };
+  }, [contextAbility, displaySections]);
+
+  const noteEditCustomization = noteEditAbility
+    ? customizations.get(keyForAbility(noteEditAbility))
+    : undefined;
+
   return (
-    <TrackerTemplate
-      abilities={abilities}
-      wizards={wizards}
-      priests={priests}
-      visiblePhases={visiblePhases}
-      activePhase={activePhase}
-      displaySections={displaySections}
-      deploymentComplete={deploymentComplete}
-      showKeywordsModal={showKeywordsModal}
-      isPhaseSelectable={isPhaseSelectable}
-      onBack={onBack}
-      onShowKeywords={() => setShowKeywordsModal(true)}
-      onCloseKeywords={() => setShowKeywordsModal(false)}
-      onPhasePress={togglePhaseFilter}
-      onToggleUsed={toggleUsed}
-      onCompleteDeployment={completeDeployment}
-      onNextTurn={nextTurn}
-      user={user}
-      onOpenLogin={onOpenLogin}
-      searchQuery={searchQuery}
-      onSearchChange={setSearchQuery}
-    />
+    <>
+      <TrackerTemplate
+        abilities={abilities}
+        wizards={wizards}
+        priests={priests}
+        visiblePhases={visiblePhases}
+        activePhase={activePhase}
+        displaySections={displaySections}
+        deploymentComplete={deploymentComplete}
+        showKeywordsModal={showKeywordsModal}
+        isPhaseSelectable={isPhaseSelectable}
+        onBack={onBack}
+        onShowKeywords={() => setShowKeywordsModal(true)}
+        onCloseKeywords={() => setShowKeywordsModal(false)}
+        onPhasePress={togglePhaseFilter}
+        onToggleUsed={toggleUsed}
+        onCompleteDeployment={completeDeployment}
+        onNextTurn={nextTurn}
+        user={user}
+        onOpenLogin={onOpenLogin}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        customizations={customizations}
+        onLongPressAbility={setContextAbility}
+        showHidden={showHidden}
+        onToggleShowHidden={() => setShowHidden(s => !s)}
+      />
+
+      <AbilityContextMenu
+        visible={!!contextAbility}
+        ability={contextAbility}
+        customization={
+          contextAbility ? customizations.get(keyForAbility(contextAbility)) : undefined
+        }
+        positionInPhase={contextPosition}
+        user={user}
+        onClose={() => setContextAbility(null)}
+        onMoveUp={a => handleMove(a, 'up')}
+        onMoveDown={a => handleMove(a, 'down')}
+        onEditNote={a => setNoteEditAbility(a)}
+        onToggleHidden={handleToggleHidden}
+        onOpenLogin={onOpenLogin}
+      />
+
+      <NoteEditorModal
+        visible={!!noteEditAbility}
+        abilityName={noteEditAbility?.name ?? ''}
+        initialNote={noteEditCustomization?.note ?? null}
+        onSave={async note => {
+          if (noteEditAbility) await handleSetNote(noteEditAbility, note);
+        }}
+        onClose={() => setNoteEditAbility(null)}
+      />
+    </>
   );
 }
 

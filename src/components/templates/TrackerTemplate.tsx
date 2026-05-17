@@ -3,6 +3,7 @@ import { View, StyleSheet } from 'react-native';
 import type { Ability, Phase } from '../../types';
 import type { Wizard, Priest } from '../../utils/jsonParser';
 import type { User } from '../../types/user';
+import type { Customization } from '../../types/customization';
 import AppHeader from '../organisms/AppHeader';
 import PhaseSelector from '../organisms/PhaseSelector';
 import WizardSection from '../organisms/WizardSection';
@@ -43,6 +44,15 @@ interface TrackerTemplateProps {
   searchQuery: string;
   /** Called when the user types in the header search bar */
   onSearchChange: (text: string) => void;
+  // ----- Customization (long-press menu + Show Hidden toggle) -----
+  /** Per-ability customization map (note / hidden / sort_order). Empty when signed out or unverified. */
+  customizations: Map<string, Customization>;
+  /** Long-press handler — opens the customization context menu in the screen. */
+  onLongPressAbility: (ability: Ability) => void;
+  /** Whether hidden abilities are currently rendered (faded) in the list. */
+  showHidden: boolean;
+  /** Toggle the Show Hidden state. */
+  onToggleShowHidden: () => void;
 }
 
 /**
@@ -86,6 +96,8 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
           onOpenLogin={props.onOpenLogin}
           searchQuery={props.searchQuery}
           onSearchChange={props.onSearchChange}
+          showHidden={props.showHidden}
+          onToggleShowHidden={props.onToggleShowHidden}
         />
         <PhaseSelector
           phases={props.visiblePhases}
@@ -131,6 +143,8 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
       <AbilityList
         sections={props.displaySections}
         onToggleUsed={props.onToggleUsed}
+        onLongPressAbility={props.onLongPressAbility}
+        customizations={props.customizations}
         contentMaxWidth={contentMaxWidth}
         horizontalPadding={horizontalPadding}
         cardColumns={cardColumns}

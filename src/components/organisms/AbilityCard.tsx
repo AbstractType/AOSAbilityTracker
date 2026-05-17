@@ -11,18 +11,49 @@ import { universalKeywords } from '../../data/universalKeywords';
 
 interface AbilityCardProps {
   ability: Ability;
+  /** Toggle used/ready — fires on a normal tap (short press). */
   onToggleUsed: () => void;
+  /**
+   * Open the customization context menu — fires on long-press.
+   * Optional: passed-through from the screen. When omitted, long-press is a no-op.
+   */
+  onLongPress?: () => void;
+  /**
+   * User's note for this ability (rendered as a "Notes" section below the
+   * description). Null/empty/undefined = no section rendered.
+   */
+  note?: string | null;
+  /**
+   * True when the user has marked this ability as hidden. The card is only
+   * rendered at all when the parent has the Show Hidden toggle on, so this
+   * controls the faded "hidden" styling + the small inline badge — it does
+   * NOT control visibility itself.
+   */
+  hidden?: boolean;
 }
 
 /**
  * AbilityCard organism — the full card displaying an ability.
- * Composes: card header, casting/command badges, status badge, source, name, description, keywords.
+ * Composes: card header, casting/command badges, status badge, source, name,
+ * description, keywords, and (when set) a user-written Notes section.
+ *
+ * Long-press opens a customization context menu instead of toggling used —
+ * RN's TouchableOpacity routes `onLongPress` exclusively, so a long-press
+ * never accidentally also fires `onPress`.
  */
-export default function AbilityCard({ ability, onToggleUsed }: AbilityCardProps) {
+export default function AbilityCard({
+  ability,
+  onToggleUsed,
+  onLongPress,
+  note,
+  hidden,
+}: AbilityCardProps) {
   const { scaleFont, select } = useResponsive();
 
   const headerLabel = getHeaderLabel(ability);
   const keywords = getDisplayableKeywords(ability);
+  const trimmedNote = note?.trim();
+  const hasNote = !!trimmedNote;
 
   return (
     <TouchableOpacity
@@ -30,8 +61,11 @@ export default function AbilityCard({ ability, onToggleUsed }: AbilityCardProps)
         styles.card,
         { borderColor: colors.phaseBorder[ability.phase] },
         ability.used && styles.cardUsed,
+        hidden && styles.cardHidden,
       ]}
       onPress={onToggleUsed}
+      onLongPress={onLongPress}
+      delayLongPress={400}
       activeOpacity={0.85}
     >
       <View style={styles.wrapper}>
@@ -64,6 +98,14 @@ export default function AbilityCard({ ability, onToggleUsed }: AbilityCardProps)
             variant={ability.used ? 'used' : 'ready'}
           />
         </View>
+
+        {/* Hidden tag — small badge near the top-left so the user knows why
+            this card looks faded when Show Hidden is on. */}
+        {hidden ? (
+          <View style={styles.hiddenTag}>
+            <Text style={styles.hiddenTagText}>HIDDEN</Text>
+          </View>
+        ) : null}
 
         {/* Card body */}
         <View
@@ -98,6 +140,15 @@ export default function AbilityCard({ ability, onToggleUsed }: AbilityCardProps)
           </Text>
           <AbilityDescription description={ability.description} />
           {keywords ? <KeywordsList keywords={keywords} /> : null}
+
+          {/* User note — only rendered when one is set. Visually distinct
+              (italic, accent border) so it's obviously user-added not rules text. */}
+          {hasNote ? (
+            <View style={styles.noteBlock}>
+              <Text style={styles.noteLabel}>YOUR NOTES</Text>
+              <Text style={styles.noteText}>{trimmedNote}</Text>
+            </View>
+          ) : null}
         </View>
       </View>
     </TouchableOpacity>
@@ -153,6 +204,11 @@ const styles = StyleSheet.create({
   cardUsed: {
     opacity: 0.5,
   },
+  cardHidden: {
+    // Faded styling when this card is rendered as a "hidden" entry (only
+    // happens with the Show Hidden toggle on). Stacks with cardUsed.
+    opacity: 0.55,
+  },
   wrapper: {
     position: 'relative',
   },
@@ -165,6 +221,22 @@ const styles = StyleSheet.create({
   },
   statusBadgeSpell: {
     transform: [{ translateY: 32 }],
+  },
+  hiddenTag: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 3,
+    zIndex: 5,
+  },
+  hiddenTagText: {
+    color: '#FFF',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.6,
   },
   body: {
     backgroundColor: colors.bgCard,
@@ -179,5 +251,32 @@ const styles = StyleSheet.create({
     color: colors.textCardPrimary,
     letterSpacing: 0.5,
     marginBottom: 8,
+  },
+
+  // ---- User-written notes section ----
+  noteBlock: {
+    marginTop: 12,
+    paddingTop: 10,
+    paddingLeft: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#3F66D6',
+    backgroundColor: 'rgba(63, 102, 214, 0.08)',
+    paddingBottom: 8,
+    paddingRight: 8,
+    borderTopRightRadius: 4,
+    borderBottomRightRadius: 4,
+  },
+  noteLabel: {
+    color: '#3F66D6',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    marginBottom: 4,
+  },
+  noteText: {
+    color: colors.textCardSecondary,
+    fontSize: 13,
+    fontStyle: 'italic',
+    lineHeight: 18,
   },
 });

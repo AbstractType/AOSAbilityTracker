@@ -1,6 +1,8 @@
 import React from 'react';
 import { View, FlatList, StyleSheet } from 'react-native';
 import type { Ability, Phase } from '../../types';
+import type { Customization } from '../../types/customization';
+import { keyForAbility } from '../../types/customization';
 import AbilityCard from './AbilityCard';
 
 interface PhaseSection {
@@ -13,6 +15,14 @@ interface AbilityListProps {
   sections: PhaseSection[];
   /** Toggle the used state of an ability */
   onToggleUsed: (abilityId: string) => void;
+  /** Open the customization context menu (long-press). When omitted, long-press is a no-op. */
+  onLongPressAbility?: (ability: Ability) => void;
+  /**
+   * Per-ability customization map keyed by `name|source`. Used to render
+   * note sections and faded "hidden" styling. Empty/missing entries mean
+   * the ability has no customization (renders normally).
+   */
+  customizations?: Map<string, Customization>;
   /** Max width of the content area (for centered layout on desktop) */
   contentMaxWidth: number;
   /** Horizontal padding inside the list */
@@ -37,6 +47,8 @@ interface AbilityListProps {
 export default function AbilityList({
   sections,
   onToggleUsed,
+  onLongPressAbility,
+  customizations,
   contentMaxWidth,
   horizontalPadding,
   cardColumns = 1,
@@ -60,13 +72,21 @@ export default function AbilityList({
             <View style={styles.masonryGrid}>
               {distributeIntoColumns(section.items, cardColumns).map((columnItems, colIdx) => (
                 <View key={colIdx} style={styles.masonryColumn}>
-                  {columnItems.map(ability => (
-                    <AbilityCard
-                      key={ability.id}
-                      ability={ability}
-                      onToggleUsed={() => onToggleUsed(ability.id)}
-                    />
-                  ))}
+                  {columnItems.map(ability => {
+                    const custom = customizations?.get(keyForAbility(ability));
+                    return (
+                      <AbilityCard
+                        key={ability.id}
+                        ability={ability}
+                        onToggleUsed={() => onToggleUsed(ability.id)}
+                        onLongPress={
+                          onLongPressAbility ? () => onLongPressAbility(ability) : undefined
+                        }
+                        note={custom?.note}
+                        hidden={custom?.hidden}
+                      />
+                    );
+                  })}
                 </View>
               ))}
             </View>

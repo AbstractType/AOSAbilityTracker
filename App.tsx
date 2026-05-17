@@ -9,8 +9,10 @@ import type { Ability } from './src/types';
 import { parseAbilitiesFromJSON, type Wizard, type Priest } from './src/utils/jsonParser';
 import type { User } from './src/types/user';
 import type { SavedArmy } from './src/types/army';
+import type { Customization } from './src/types/customization';
 import { supabase } from './src/lib/supabase';
 import { getSavedArmies, saveArmy, deleteArmy } from './src/utils/savedArmies';
+import { getAllCustomizations } from './src/utils/customizations';
 
 // ---------------------------------------------------------------------------
 // React Native Web dev-warning filter
@@ -71,6 +73,15 @@ export default function App() {
   const [showLoginModal, setShowLoginModal] = useState(false);
   /** Saved armies for the current user. Empty when signed out OR unverified. */
   const [savedArmies, setSavedArmies] = useState<SavedArmy[]>([]);
+  /**
+   * Per-ability customizations (notes/hide/sort_order) for the current user,
+   * keyed by `name|source`. Empty when signed out or unverified. The screen
+   * mutates this via the setter — App keeps it as the single source of truth
+   * but doesn't itself perform writes (those happen in utils/customizations).
+   */
+  const [customizations, setCustomizations] = useState<Map<string, Customization>>(
+    () => new Map()
+  );
 
   // Subscribe to Supabase auth events: SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED,
   // USER_UPDATED (the last one fires when email gets verified in another tab).
@@ -90,18 +101,25 @@ export default function App() {
     return () => data.subscription.unsubscribe();
   }, []);
 
-  // Load saved armies whenever the verified user changes. Verified-only:
-  // unverified users still see the modal but the army list is hidden behind
-  // a "verify your email" gate, so there's no point fetching for them.
-  // Signing out clears the list immediately.
+  // Load saved armies + customizations whenever the verified user changes.
+  // Verified-only: unverified users see the modal but the army list and
+  // customization features are gated, so there's no point fetching for them.
+  // Signing out clears both immediately.
   useEffect(() => {
     let cancelled = false;
     if (user?.emailVerified) {
-      getSavedArmies().then(list => {
-        if (!cancelled) setSavedArmies(list);
-      });
+      // Fetch both in parallel — they're independent and we don't want the
+      // slower one to delay the other appearing.
+      Promise.all([getSavedArmies(), getAllCustomizations()]).then(
+        ([armies, customs]) => {
+          if (cancelled) return;
+          setSavedArmies(armies);
+          setCustomizations(customs);
+        }
+      );
     } else {
       setSavedArmies([]);
+      setCustomizations(new Map());
     }
     return () => {
       cancelled = true;
@@ -206,6 +224,8 @@ export default function App() {
           onBack={handleBackToHome}
           user={user}
           onOpenLogin={() => setShowLoginModal(true)}
+          customizations={customizations}
+          onCustomizationsChange={setCustomizations}
         />
       )}
 
