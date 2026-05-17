@@ -50,6 +50,12 @@ jobs:
         run: touch web-build/.nojekyll
 
       - uses: actions/configure-pages@v4
+        with:
+          # Auto-enable Pages on the repo if it isn't yet, instead of failing
+          # with "Get Pages site failed: Not Found". Means no manual
+          # Settings -> Pages -> Source flip is required for first deploy
+          # (or for anyone who forks this repo).
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
