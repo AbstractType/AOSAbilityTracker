@@ -1,5 +1,6 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Alert, SafeAreaView, StyleSheet } from 'react-native';
+import type { Session } from '@supabase/supabase-js';
 import LandingScreen from './src/screens/LandingScreen';
 import AbilityTrackerScreen from './src/screens/AbilityTrackerScreen';
 import LoginModal from './src/components/organisms/LoginModal';
@@ -8,12 +9,8 @@ import type { Ability } from './src/types';
 import { parseAbilitiesFromJSON, type Wizard, type Priest } from './src/utils/jsonParser';
 import type { User } from './src/types/user';
 import type { SavedArmy } from './src/types/army';
-import { MAX_SAVED_ARMIES } from './src/types/army';
-import {
-  getSavedArmies,
-  persistSavedArmies,
-  makeArmyId,
-} from './src/utils/savedArmies';
+import { supabase } from './src/lib/supabase';
+import { getSavedArmies, saveArmy, deleteArmy } from './src/utils/savedArmies';
 
 // ---------------------------------------------------------------------------
 // React Native Web dev-warning filter
@@ -37,6 +34,18 @@ if (typeof console !== 'undefined' && typeof console.error === 'function') {
   };
 }
 
+/** Project a Supabase session into our slimmer User shape (or null). */
+function sessionToUser(session: Session | null): User | null {
+  if (!session?.user) return null;
+  return {
+    id: session.user.id,
+    email: session.user.email ?? '',
+    // Supabase sets email_confirmed_at on the user record once the magic link
+    // has been clicked. We use this exact field as the gate for saving armies.
+    emailVerified: !!session.user.email_confirmed_at,
+  };
+}
+
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<'landing' | 'tracker'>('landing');
   const [abilities, setAbilities] = useState<Ability[]>([]);
@@ -54,12 +63,50 @@ export default function App() {
    */
   const [armyLoadCount, setArmyLoadCount] = useState(0);
 
-  // Global user/auth state — kept at the App root so it survives screen changes
-  // and so the LoginModal can be opened from any view.
+  // ---- Auth state, driven by Supabase ----
+  // `user` is derived from the Supabase session. It's null while the session is
+  // being restored on initial load AND when the user is genuinely signed out;
+  // the UI treats both cases the same way (show Sign In affordances).
   const [user, setUser] = useState<User | null>(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
-  /** The signed-in user's saved army list (loaded from storage on sign-in) */
+  /** Saved armies for the current user. Empty when signed out OR unverified. */
   const [savedArmies, setSavedArmies] = useState<SavedArmy[]>([]);
+
+  // Subscribe to Supabase auth events: SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED,
+  // USER_UPDATED (the last one fires when email gets verified in another tab).
+  // The listener is the single source of truth — every UI change flows through
+  // it, so the avatar updates automatically when the user signs in from the
+  // LoginModal or completes verification via a magic link.
+  useEffect(() => {
+    // Restore any existing session (returning visitor in the same browser).
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(sessionToUser(data.session));
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(sessionToUser(session));
+    });
+
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  // Load saved armies whenever the verified user changes. Verified-only:
+  // unverified users still see the modal but the army list is hidden behind
+  // a "verify your email" gate, so there's no point fetching for them.
+  // Signing out clears the list immediately.
+  useEffect(() => {
+    let cancelled = false;
+    if (user?.emailVerified) {
+      getSavedArmies().then(list => {
+        if (!cancelled) setSavedArmies(list);
+      });
+    } else {
+      setSavedArmies([]);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, user?.emailVerified]);
 
   /**
    * Parses a roster JSON and loads it into the tracker. Used both by the
@@ -103,40 +150,37 @@ export default function App() {
     setCurrentArmyJson(null);
   }
 
-  function handleLogin(loggedInUser: User) {
-    setUser(loggedInUser);
-    // Pull the user's saved armies from storage so they're available immediately
-    setSavedArmies(getSavedArmies(loggedInUser.email));
-    setShowLoginModal(false);
+  // ---- Saved-army handlers ----
+  // LoginModal calls these to mutate the user's saved-army list. Each one
+  // talks to Supabase, updates local state on success, and shows an Alert
+  // on failure (the modal also surfaces inline errors for the save form).
+
+  async function handleSaveArmy(name: string) {
+    if (!user?.emailVerified || !currentArmyJson) return;
+    try {
+      const saved = await saveArmy(name, currentArmyJson);
+      // Prepend so the most-recently-saved army appears at the top, matching
+      // the default `order by created_at desc` we use on fetch.
+      setSavedArmies(prev => [saved, ...prev]);
+    } catch (err) {
+      Alert.alert(
+        'Could not save',
+        err instanceof Error ? err.message : 'Something went wrong.'
+      );
+    }
   }
 
-  function handleLogout() {
-    setUser(null);
-    setSavedArmies([]);
-    setShowLoginModal(false);
-  }
-
-  function handleSaveArmy(name: string) {
-    if (!user || !currentArmyJson) return;
-    if (savedArmies.length >= MAX_SAVED_ARMIES) return;
-    const next: SavedArmy[] = [
-      ...savedArmies,
-      {
-        id: makeArmyId(),
-        name,
-        json: currentArmyJson,
-        createdAt: Date.now(),
-      },
-    ];
-    setSavedArmies(next);
-    persistSavedArmies(user.email, next);
-  }
-
-  function handleDeleteArmy(armyId: string) {
+  async function handleDeleteArmy(armyId: string) {
     if (!user) return;
-    const next = savedArmies.filter(a => a.id !== armyId);
-    setSavedArmies(next);
-    persistSavedArmies(user.email, next);
+    try {
+      await deleteArmy(armyId);
+      setSavedArmies(prev => prev.filter(a => a.id !== armyId));
+    } catch (err) {
+      Alert.alert(
+        'Could not delete',
+        err instanceof Error ? err.message : 'Something went wrong.'
+      );
+    }
   }
 
   function handleLoadSavedArmy(army: SavedArmy) {
@@ -172,8 +216,6 @@ export default function App() {
         visible={showLoginModal}
         user={user}
         onClose={() => setShowLoginModal(false)}
-        onLogin={handleLogin}
-        onLogout={handleLogout}
         savedArmies={savedArmies}
         currentArmyJson={currentArmyJson}
         onSaveArmy={handleSaveArmy}

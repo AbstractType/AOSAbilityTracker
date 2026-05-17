@@ -28,7 +28,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          # Bumped from 18 to 20: @supabase/supabase-js (added in v0.2)
+          # declares `engines.node: >=20`. Works on 18 in practice but
+          # spews EBADENGINE warnings in CI logs.
+          node-version: '20'
           cache: 'npm'
 
       - name: Install dependencies
@@ -36,6 +39,12 @@ jobs:
 
       - name: Build web bundle
         # Expo SDK 48 emits the static bundle to ./web-build by default.
+        # Supabase env vars are injected here so webpack DefinePlugin can
+        # bake them into the bundle. Both keys are safe to be public
+        # (the anon key is designed to be) — RLS enforces access control.
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
         run: npx expo export:web
 
       - name: Add SPA 404 fallback
