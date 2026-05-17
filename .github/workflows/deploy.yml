@@ -1,0 +1,66 @@
+name: Deploy web build to GitHub Pages
+
+# Build and publish the static web bundle whenever main moves. The workflow
+# is also manually dispatchable so you can republish without an empty commit.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Permissions required by actions/deploy-pages@v4.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One active deploy at a time. A new push cancels any in-flight build so the
+# site always reflects the latest commit rather than racing.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web bundle
+        # Expo SDK 48 emits the static bundle to ./web-build by default.
+        run: npx expo export:web
+
+      - name: Add SPA 404 fallback
+        # Copy index.html -> 404.html so any bookmarked deep path falls back
+        # to the app instead of GitHub's default 404 page. The app has no
+        # client-side router today, but this future-proofs us cheaply.
+        run: cp web-build/index.html web-build/404.html
+
+      - name: Disable Jekyll processing
+        # Pages otherwise ignores files/dirs starting with '_'. Webpack output
+        # doesn't use those today, but .nojekyll is the standard guard.
+        run: touch web-build/.nojekyll
+
+      - uses: actions/configure-pages@v4
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web-build
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

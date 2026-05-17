@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "AOS Ability Tracker",
+    "slug": "aos-ability-tracker",
+    "version": "0.1.0",
+    "platforms": ["ios", "android", "web"],
+    "sdkVersion": "48.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "web": {
+      "bundler": "webpack"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+node_modules
+.expo
+.expo-shared
+.claude
+dist
+build
+web-build
+coverage
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+# Local env files — none used today, but pre-empt accidents
+.env
+.env.*
+!.env.example
