@@ -110,12 +110,20 @@ interface LoginModalProps {
   savedArmies?: SavedArmy[];
   /** Raw JSON of the army currently loaded in the tracker (if any) — enables saving. */
   currentArmyJson?: string | null;
-  /** Persist the current army under a user-chosen name (async, errors via Alert in App). */
-  onSaveArmy?: (name: string) => void;
+  /**
+   * Persist the current army under a user-chosen name.
+   * Async — resolves on success, rejects with a friendly Error message on
+   * failure so this modal can surface it inline (the App layer can't, since
+   * react-native-web's Alert.alert is a no-op).
+   */
+  onSaveArmy?: (name: string) => Promise<void>;
   /** Load a previously saved army (parses its JSON and navigates to the tracker). */
   onLoadSavedArmy?: (army: SavedArmy) => void;
-  /** Delete a saved army from the user's list. */
-  onDeleteArmy?: (armyId: string) => void;
+  /**
+   * Delete a saved army from the user's list. Async — resolves on success,
+   * rejects with a friendly Error on failure.
+   */
+  onDeleteArmy?: (armyId: string) => Promise<void>;
 }
 
 /**
@@ -165,6 +173,12 @@ export default function LoginModal({
   const [savingName, setSavingName] = useState('');
   const [showSaveForm, setShowSaveForm] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /** True while the save request is in flight — disables the button so a
+   *  double-tap can't trigger two inserts. */
+  const [savingArmy, setSavingArmy] = useState(false);
+  /** Id of an army currently being deleted (so we can grey out just that
+   *  row), or null when no delete is in flight. */
+  const [deletingArmyId, setDeletingArmyId] = useState<string | null>(null);
 
   useEffect(() => {
     injectAutofillFixOnce();
@@ -176,6 +190,8 @@ export default function LoginModal({
       setShowSaveForm(false);
       setSavingName('');
       setSaveError(null);
+      setSavingArmy(false);
+      setDeletingArmyId(null);
       setAuthError(null);
       setAuthInfo(null);
       setBusy(false);
@@ -306,10 +322,10 @@ export default function LoginModal({
   }
 
   // -------------------------------------------------------------------------
-  // Save-current-army (unchanged from previous version, just calls async prop)
+  // Save-current-army
   // -------------------------------------------------------------------------
 
-  function handleConfirmSave() {
+  async function handleConfirmSave() {
     setSaveError(null);
     const trimmed = savingName.trim();
     if (!trimmed) {
@@ -324,9 +340,44 @@ export default function LoginModal({
       setSaveError(`You can only save up to ${MAX_SAVED_ARMIES} armies. Delete one first.`);
       return;
     }
-    onSaveArmy?.(trimmed);
-    setSavingName('');
-    setShowSaveForm(false);
+    if (!onSaveArmy) return;
+
+    setSavingArmy(true);
+    try {
+      await onSaveArmy(trimmed);
+      // Only clear the form on success — leaving the typed name in place
+      // when save fails saves the user from retyping after fixing whatever
+      // the error was.
+      setSavingName('');
+      setShowSaveForm(false);
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : 'Could not save the army. Try again.'
+      );
+    } finally {
+      setSavingArmy(false);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Delete-saved-army
+  // -------------------------------------------------------------------------
+
+  async function handleDeleteArmyClick(armyId: string) {
+    if (!onDeleteArmy || deletingArmyId) return;
+    setDeletingArmyId(armyId);
+    setSaveError(null);
+    try {
+      await onDeleteArmy(armyId);
+    } catch (err) {
+      // Surface in the same saveError slot — it's right next to where the
+      // army list is, so the user sees it without a layout shift.
+      setSaveError(
+        err instanceof Error ? err.message : 'Could not delete the army. Try again.'
+      );
+    } finally {
+      setDeletingArmyId(null);
+    }
   }
 
   function handleCancel() {
@@ -415,40 +466,61 @@ export default function LoginModal({
                             No saved armies yet. Load an army and save it here for quick access later.
                           </Text>
                         ) : (
-                          savedArmies.map((army) => (
-                            <View key={army.id} style={styles.armyRow}>
-                              <TouchableOpacity
-                                style={styles.armyLoadTarget}
-                                onPress={() => onLoadSavedArmy?.(army)}
-                                accessibilityLabel={`Load army ${army.name}`}
-                                activeOpacity={0.7}
+                          savedArmies.map((army) => {
+                            const isDeleting = deletingArmyId === army.id;
+                            return (
+                              <View
+                                key={army.id}
+                                style={[styles.armyRow, isDeleting && styles.armyRowFading]}
                               >
-                                <Text style={styles.armyIcon}>⚔️</Text>
-                                <View style={styles.armyTextWrapper}>
-                                  <Text style={styles.armyName} numberOfLines={1}>
-                                    {army.name}
-                                  </Text>
-                                  <Text style={styles.armyMeta}>Tap to load</Text>
-                                </View>
-                              </TouchableOpacity>
-                              {onDeleteArmy ? (
                                 <TouchableOpacity
-                                  style={styles.armyDeleteBtn}
-                                  onPress={() => onDeleteArmy(army.id)}
-                                  accessibilityLabel={`Delete army ${army.name}`}
-                                  activeOpacity={0.6}
+                                  style={styles.armyLoadTarget}
+                                  onPress={() => onLoadSavedArmy?.(army)}
+                                  disabled={isDeleting}
+                                  accessibilityLabel={`Load army ${army.name}`}
+                                  activeOpacity={0.7}
                                 >
-                                  <Text style={styles.armyDeleteText}>×</Text>
+                                  <Text style={styles.armyIcon}>⚔️</Text>
+                                  <View style={styles.armyTextWrapper}>
+                                    <Text style={styles.armyName} numberOfLines={1}>
+                                      {army.name}
+                                    </Text>
+                                    <Text style={styles.armyMeta}>
+                                      {isDeleting ? 'Deleting…' : 'Tap to load'}
+                                    </Text>
+                                  </View>
                                 </TouchableOpacity>
-                              ) : null}
-                            </View>
-                          ))
+                                {onDeleteArmy ? (
+                                  <TouchableOpacity
+                                    style={styles.armyDeleteBtn}
+                                    onPress={() => handleDeleteArmyClick(army.id)}
+                                    disabled={isDeleting || !!deletingArmyId}
+                                    accessibilityLabel={`Delete army ${army.name}`}
+                                    activeOpacity={0.6}
+                                  >
+                                    <Text style={styles.armyDeleteText}>×</Text>
+                                  </TouchableOpacity>
+                                ) : null}
+                              </View>
+                            );
+                          })
                         )}
+
+                        {/* Save / delete errors surface here so they're visible
+                            regardless of whether the save form is open. */}
+                        {saveError ? (
+                          <Text style={styles.errorText} accessibilityRole="alert">
+                            {saveError}
+                          </Text>
+                        ) : null}
 
                         {canSaveCurrent && !showSaveForm ? (
                           <TouchableOpacity
                             style={styles.saveCurrentBtn}
-                            onPress={() => setShowSaveForm(true)}
+                            onPress={() => {
+                              setShowSaveForm(true);
+                              setSaveError(null);
+                            }}
                             activeOpacity={0.7}
                           >
                             <Text style={styles.saveCurrentText}>+ Save current army</Text>
@@ -465,12 +537,10 @@ export default function LoginModal({
                               placeholderTextColor="#7A8BA4"
                               autoFocus
                               maxLength={40}
+                              editable={!savingArmy}
                               onSubmitEditing={handleConfirmSave}
                               selectionColor={CARET_COLOR}
                             />
-                            {saveError ? (
-                              <Text style={styles.errorText}>{saveError}</Text>
-                            ) : null}
                             <View style={styles.saveActions}>
                               <Button
                                 label="Cancel"
@@ -480,8 +550,14 @@ export default function LoginModal({
                                   setSaveError(null);
                                 }}
                                 variant="secondary"
+                                disabled={savingArmy}
                               />
-                              <Button label="Save" onPress={handleConfirmSave} variant="primary" />
+                              <Button
+                                label={savingArmy ? 'Saving…' : 'Save'}
+                                onPress={handleConfirmSave}
+                                variant="primary"
+                                disabled={savingArmy}
+                              />
                             </View>
                           </View>
                         ) : null}
@@ -889,6 +965,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#22324A',
     overflow: 'hidden',
+  },
+  armyRowFading: {
+    opacity: 0.5,
   },
   armyLoadTarget: {
     flex: 1,

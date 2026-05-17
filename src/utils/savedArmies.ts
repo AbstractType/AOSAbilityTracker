@@ -52,19 +52,44 @@ export async function getSavedArmies(): Promise<SavedArmy[]> {
  * timestamps) so the caller can append it to local state without a refetch.
  * Throws a friendly Error on failure (3-army cap, network error, RLS denial)
  * so the calling UI can render the message inline.
+ *
+ * Why we pass `user_id` explicitly even though the user is implicit in the
+ * auth session: the RLS insert policy is `with check (auth.uid() = user_id)`.
+ * Without supplying `user_id`, Postgres sees `auth.uid() = null` which
+ * evaluates to NULL (not TRUE), so the policy denies the insert with a 403
+ * + error 42501. Future cleanup: add `default auth.uid()` to the column
+ * in a DB migration and drop this manual passthrough.
  */
 export async function saveArmy(name: string, json: string): Promise<SavedArmy> {
+  // Pull the user's id from the local session — synchronous in practice
+  // (no network round-trip), so the cost is negligible.
+  const { data: sessionData } = await supabase.auth.getSession();
+  const userId = sessionData.session?.user?.id;
+  if (!userId) {
+    throw new Error('You need to be signed in to save armies.');
+  }
+
   const { data, error } = await supabase
     .from('armies')
-    .insert({ name, json })
+    .insert({ name, json, user_id: userId })
     .select()
     .single();
 
   if (error) {
     // The DB trigger raises a check_violation when the user already has 3.
-    // Map it to a friendlier message; everything else passes through.
     if (error.message.includes('3-army limit')) {
       throw new Error('You can only save up to 3 armies. Delete one first.');
+    }
+    // RLS rejection (defensive — shouldn't fire now that we pass user_id,
+    // but catches it cleanly if the policy ever changes or the session
+    // is stale for some reason).
+    if (
+      error.message.includes('row-level security') ||
+      error.message.includes('violates row-level security')
+    ) {
+      throw new Error(
+        'Could not save — your session may have expired. Sign out and back in to refresh.'
+      );
     }
     throw new Error(error.message || 'Could not save the army. Try again.');
   }

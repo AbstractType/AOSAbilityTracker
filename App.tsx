@@ -155,32 +155,30 @@ export default function App() {
   // talks to Supabase, updates local state on success, and shows an Alert
   // on failure (the modal also surfaces inline errors for the save form).
 
+  // NOTE: handleSaveArmy and handleDeleteArmy intentionally let errors
+  // propagate to the caller (LoginModal) instead of catching with Alert.
+  // Alert.alert() is a no-op in react-native-web, so anything it caught
+  // would vanish silently. Callers surface errors in their own UI
+  // (e.g. the saveError slot on the save form).
   async function handleSaveArmy(name: string) {
-    if (!user?.emailVerified || !currentArmyJson) return;
-    try {
-      const saved = await saveArmy(name, currentArmyJson);
-      // Prepend so the most-recently-saved army appears at the top, matching
-      // the default `order by created_at desc` we use on fetch.
-      setSavedArmies(prev => [saved, ...prev]);
-    } catch (err) {
-      Alert.alert(
-        'Could not save',
-        err instanceof Error ? err.message : 'Something went wrong.'
-      );
+    if (!currentArmyJson) {
+      throw new Error('No army is currently loaded.');
     }
+    if (!user?.emailVerified) {
+      throw new Error('Verify your email before saving armies.');
+    }
+    const saved = await saveArmy(name, currentArmyJson);
+    // Prepend so the most-recently-saved army appears at the top, matching
+    // the default `order by created_at desc` we use on fetch.
+    setSavedArmies(prev => [saved, ...prev]);
   }
 
   async function handleDeleteArmy(armyId: string) {
-    if (!user) return;
-    try {
-      await deleteArmy(armyId);
-      setSavedArmies(prev => prev.filter(a => a.id !== armyId));
-    } catch (err) {
-      Alert.alert(
-        'Could not delete',
-        err instanceof Error ? err.message : 'Something went wrong.'
-      );
+    if (!user) {
+      throw new Error('You need to be signed in to delete armies.');
     }
+    await deleteArmy(armyId);
+    setSavedArmies(prev => prev.filter(a => a.id !== armyId));
   }
 
   function handleLoadSavedArmy(army: SavedArmy) {
