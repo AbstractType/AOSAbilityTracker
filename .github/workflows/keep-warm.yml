@@ -1,0 +1,63 @@
+name: Keep Supabase warm
+
+# Supabase free-tier projects auto-pause after ~7 days of database inactivity.
+# When that happens the project's DNS is pulled and the live app's auth +
+# saved-army features break until someone manually clicks "Restore" in the
+# dashboard. This job makes one tiny database query per day so the inactivity
+# timer never reaches 7 days.
+#
+# Note: this PREVENTS future pauses. It cannot un-pause an already-paused
+# project — that still needs a one-time manual Restore in the dashboard.
+
+on:
+  schedule:
+    # 07:37 UTC daily. Deliberately an odd minute, not the top of the hour:
+    # GitHub's scheduler is busiest at :00 and can delay or drop runs then.
+    # Daily against a 7-day pause window means even several missed runs in a
+    # row are harmless.
+    - cron: '37 7 * * *'
+  # Lets you (or me) trigger it by hand from the Actions tab to verify it works
+  # without waiting for the scheduled time.
+  workflow_dispatch:
+
+# This job only makes an outbound HTTPS request — it needs no access to the
+# repo contents, so grant nothing.
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_URL}" ] || [ -z "${SUPABASE_ANON_KEY}" ]; then
+            echo "::error::Missing EXPO_PUBLIC_SUPABASE_URL or EXPO_PUBLIC_SUPABASE_ANON_KEY repo secret."
+            exit 1
+          fi
+
+          # Strip any accidental trailing slash so we don't build a // path.
+          BASE="${SUPABASE_URL%/}"
+
+          # Query a real table through PostgREST. This goes through Postgres
+          # (unlike the auth health endpoint), so it genuinely resets the DB
+          # inactivity timer. RLS returns an empty set for the anon role, but
+          # the query still executes — which is exactly what we want. 200 is
+          # the expected response (an empty array), not 401/404.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            "${BASE}/rest/v1/armies?select=id&limit=1")
+
+          echo "Supabase REST responded with HTTP ${code}"
+
+          if [ "${code}" != "200" ]; then
+            echo "::error::Unexpected status ${code} — the project may be paused, or the URL/key secret is wrong."
+            exit 1
+          fi
+
+          echo "Supabase is awake. Inactivity timer reset."
