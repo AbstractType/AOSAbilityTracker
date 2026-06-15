@@ -825,12 +825,14 @@ export default function LoginModal({
                                 }}
                                 variant="secondary"
                                 disabled={savingArmy}
+                                compact
                               />
                               <Button
                                 label={savingArmy ? 'Saving…' : 'Save'}
                                 onPress={handleConfirmSave}
                                 variant="primary"
                                 disabled={savingArmy}
+                                compact
                               />
                             </View>
                           </View>
@@ -928,12 +930,14 @@ export default function LoginModal({
                             }}
                             variant="secondary"
                             disabled={busy}
+                            compact
                           />
                           <Button
                             label={busy ? 'Saving…' : 'Save'}
                             onPress={handleProactiveChangePassword}
                             variant="primary"
                             disabled={busy}
+                            compact
                           />
                         </View>
                       </>
@@ -1041,12 +1045,14 @@ export default function LoginModal({
                       }}
                       variant="secondary"
                       disabled={busy}
+                      compact
                     />
                     <Button
                       label={busy ? 'Sending…' : 'Send reset link'}
                       onPress={handleForgotPassword}
                       variant="primary"
                       disabled={busy}
+                      compact
                     />
                   </View>
 
@@ -1145,13 +1151,14 @@ export default function LoginModal({
                   {authInfo ? <Text style={styles.infoText}>{authInfo}</Text> : null}
 
                   <View style={styles.actions}>
-                    <Button label="Cancel" onPress={handleCancel} variant="secondary" />
+                    <Button label="Cancel" onPress={handleCancel} variant="secondary" compact />
                     {mode === 'register' ? (
                       <Button
                         label={busy ? 'Creating…' : 'Create Account'}
                         onPress={handleRegister}
                         variant="primary"
                         disabled={busy}
+                        compact
                       />
                     ) : (
                       <Button
@@ -1159,6 +1166,7 @@ export default function LoginModal({
                         onPress={handleSignIn}
                         variant="primary"
                         disabled={busy}
+                        compact
                       />
                     )}
                   </View>
