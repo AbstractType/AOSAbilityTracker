@@ -28,6 +28,14 @@ interface AppHeaderProps {
   showHidden?: boolean;
   /** Toggle Show Hidden. Omit (along with showHidden) to hide the button. */
   onToggleShowHidden?: () => void;
+  // ----- Reorder mode toggle -----
+  /** Whether drag-to-reorder mode is active. */
+  reorderMode?: boolean;
+  /**
+   * Toggle reorder mode. Omit to hide the button — used to gate the feature
+   * to verified accounts (signed-out / unverified users don't get a handler).
+   */
+  onToggleReorder?: () => void;
 }
 
 /**
@@ -52,6 +60,8 @@ export default function AppHeader({
   onSearchChange,
   showHidden,
   onToggleShowHidden,
+  reorderMode,
+  onToggleReorder,
 }: AppHeaderProps) {
   // Assemble the burger menu items in priority/usage order
   const menuItems = useMemo<BurgerMenuItem[]>(() => {
@@ -72,6 +82,7 @@ export default function AppHeader({
   const showAvatar = !!(user && onOpenLogin);
   const showSearch = !!onSearchChange;
   const showHiddenToggle = !!onToggleShowHidden;
+  const showReorderToggle = !!onToggleReorder;
 
   return (
     <View style={styles.actionsRow}>
@@ -90,6 +101,18 @@ export default function AppHeader({
             activeOpacity={0.7}
           >
             <Text style={styles.hiddenToggleIcon}>{showHidden ? '👁' : '🙈'}</Text>
+          </TouchableOpacity>
+        )}
+        {showReorderToggle && (
+          <TouchableOpacity
+            onPress={onToggleReorder}
+            style={[styles.hiddenToggle, reorderMode && styles.hiddenToggleActive]}
+            accessibilityRole="button"
+            accessibilityLabel={reorderMode ? 'Done reordering' : 'Reorder cards'}
+            accessibilityState={{ selected: !!reorderMode }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.hiddenToggleIcon}>{reorderMode ? '✓' : '⠿'}</Text>
           </TouchableOpacity>
         )}
       </View>

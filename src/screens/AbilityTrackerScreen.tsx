@@ -6,6 +6,7 @@ import type { Customization } from '../types/customization';
 import { keyForAbility } from '../types/customization';
 import {
   moveAbility as moveAbilityRequest,
+  persistPhaseOrder as persistPhaseOrderRequest,
   setHidden as setHiddenRequest,
   setNote as setNoteRequest,
 } from '../utils/customizations';
@@ -91,11 +92,39 @@ export default function AbilityTrackerScreen({
   const [contextAbility, setContextAbility] = useState<Ability | null>(null);
   /** The ability currently being edited in the note editor. */
   const [noteEditAbility, setNoteEditAbility] = useState<Ability | null>(null);
+  /**
+   * Drag-to-reorder edit mode. When on, the list switches to a single-column
+   * drag-sortable view. Gated on a verified account (the only users who can
+   * persist a sort_order). See the force-exit effects below.
+   */
+  const [reorderMode, setReorderMode] = useState(false);
+  /** Inline error shown above the list if a drag commit fails to persist. */
+  const [reorderError, setReorderError] = useState<string | null>(null);
+
+  // Only verified users can customize (notes/hide/reorder), since everything
+  // persists to their account. Signed-out / unverified users never see the
+  // Reorder toggle.
+  const canCustomize = !!user && user.emailVerified;
 
   // Sync local state when parent abilities change (e.g., after loading)
   useEffect(() => {
     setAbilities(initialAbilities);
   }, [initialAbilities]);
+
+  // Force-exit reorder mode if the account can no longer customize (e.g. the
+  // user signed out while in reorder mode).
+  useEffect(() => {
+    if (!canCustomize) setReorderMode(false);
+  }, [canCustomize]);
+
+  // Exit reorder mode when the user changes what's on screen — selecting a
+  // phase filter or starting a search. Reordering should always operate on the
+  // full, unfiltered per-phase lists so the persisted sort_order is complete.
+  useEffect(() => {
+    setReorderMode(false);
+    // Clear any stale reorder error when the view changes too.
+    setReorderError(null);
+  }, [activePhase, searchQuery]);
 
   // Filter out the Deployment Phase once it's been completed for the game
   const visiblePhases = useMemo<Phase[]>(
@@ -284,6 +313,40 @@ export default function AbilityTrackerScreen({
     }
   }
 
+  /**
+   * Commit a full new order for a phase after a drag-and-drop. Mirrors
+   * handleMove's optimistic pattern, but surfaces failures via the inline
+   * `reorderError` banner instead of throwing — the drag list has no host
+   * modal to catch a thrown error, and Alert is a no-op on web.
+   */
+  async function handleCommitPhaseOrder(_phase: Phase, reordered: Ability[]) {
+    const prev = customizations;
+    const next = new Map(customizations);
+    reordered.forEach((a, i) => {
+      const k = keyForAbility(a);
+      const existing = next.get(k);
+      next.set(k, {
+        abilityName: a.name,
+        abilitySource: a.source ?? '',
+        hidden: existing?.hidden ?? false,
+        note: existing?.note ?? null,
+        sortOrder: i,
+      });
+    });
+    setReorderError(null);
+    onCustomizationsChange(next);
+
+    try {
+      await persistPhaseOrderRequest(reordered);
+    } catch (err) {
+      // Revert the optimistic order and explain the snap-back.
+      onCustomizationsChange(prev);
+      setReorderError(
+        err instanceof Error ? err.message : 'Could not save the new order. Try again.'
+      );
+    }
+  }
+
   // Position of the context-menu's ability within its phase, so the menu
   // can grey out Move Up at the top and Move Down at the bottom.
   const contextPosition = useMemo(() => {
@@ -328,6 +391,12 @@ export default function AbilityTrackerScreen({
         onLongPressAbility={setContextAbility}
         showHidden={showHidden}
         onToggleShowHidden={() => setShowHidden(s => !s)}
+        reorderMode={reorderMode}
+        // Only verified users get the toggle — undefined hides it in the header.
+        onToggleReorder={canCustomize ? () => setReorderMode(s => !s) : undefined}
+        onCommitPhaseOrder={handleCommitPhaseOrder}
+        reorderError={reorderError}
+        onDismissReorderError={() => setReorderError(null)}
       />
 
       <AbilityContextMenu

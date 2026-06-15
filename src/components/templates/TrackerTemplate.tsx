@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import type { Ability, Phase } from '../../types';
 import type { Wizard, Priest } from '../../utils/jsonParser';
 import type { User } from '../../types/user';
@@ -9,6 +9,7 @@ import PhaseSelector from '../organisms/PhaseSelector';
 import WizardSection from '../organisms/WizardSection';
 import PriestSection from '../organisms/PriestSection';
 import AbilityList from '../organisms/AbilityList';
+import ReorderableAbilityList from '../organisms/ReorderableAbilityList';
 import KeywordsModal from '../organisms/KeywordsModal';
 import { colors } from '../../theme/tokens';
 import { useResponsive, getContentMaxWidth, getCardColumns } from '../../utils/responsive';
@@ -53,6 +54,20 @@ interface TrackerTemplateProps {
   showHidden: boolean;
   /** Toggle the Show Hidden state. */
   onToggleShowHidden: () => void;
+  // ----- Drag-to-reorder mode -----
+  /** Whether the drag-sortable reorder view is active. */
+  reorderMode: boolean;
+  /**
+   * Toggle reorder mode. Undefined for users who can't customize (signed out
+   * or unverified) — when undefined, AppHeader hides the Reorder toggle.
+   */
+  onToggleReorder?: () => void;
+  /** Commit a phase's new order after a drag (optimistic persist in the screen). */
+  onCommitPhaseOrder: (phase: Phase, reordered: Ability[]) => void;
+  /** Inline error to show above the list if a drag commit failed to persist. */
+  reorderError: string | null;
+  /** Dismiss the reorder error banner. */
+  onDismissReorderError: () => void;
 }
 
 /**
@@ -98,6 +113,8 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
           onSearchChange={props.onSearchChange}
           showHidden={props.showHidden}
           onToggleShowHidden={props.onToggleShowHidden}
+          reorderMode={props.reorderMode}
+          onToggleReorder={props.onToggleReorder}
         />
         <PhaseSelector
           phases={props.visiblePhases}
@@ -139,16 +156,48 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
         </View>
       )}
 
-      {/* Scrollable ability list (multi-column grid on wide screens) */}
-      <AbilityList
-        sections={props.displaySections}
-        onToggleUsed={props.onToggleUsed}
-        onLongPressAbility={props.onLongPressAbility}
-        customizations={props.customizations}
-        contentMaxWidth={contentMaxWidth}
-        horizontalPadding={horizontalPadding}
-        cardColumns={cardColumns}
-      />
+      {/* Reorder-commit error banner (above the list, dismissible) */}
+      {props.reorderError ? (
+        <View
+          style={[
+            styles.errorBanner,
+            { maxWidth: contentMaxWidth, marginHorizontal: horizontalPadding },
+          ]}
+        >
+          <Text style={styles.errorBannerText}>{props.reorderError}</Text>
+          <Text
+            style={styles.errorBannerDismiss}
+            onPress={props.onDismissReorderError}
+            accessibilityRole="button"
+          >
+            ✕
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Ability list: drag-sortable single column in reorder mode, otherwise
+          the normal masonry grid. */}
+      {props.reorderMode ? (
+        <ReorderableAbilityList
+          sections={props.displaySections}
+          customizations={props.customizations}
+          // Clamp to a comfortable single-column width so cards don't stretch
+          // absurdly wide on desktop while reordering.
+          contentMaxWidth={Math.min(contentMaxWidth, 600)}
+          horizontalPadding={horizontalPadding}
+          onCommitPhaseOrder={props.onCommitPhaseOrder}
+        />
+      ) : (
+        <AbilityList
+          sections={props.displaySections}
+          onToggleUsed={props.onToggleUsed}
+          onLongPressAbility={props.onLongPressAbility}
+          customizations={props.customizations}
+          contentMaxWidth={contentMaxWidth}
+          horizontalPadding={horizontalPadding}
+          cardColumns={cardColumns}
+        />
+      )}
 
       {/* Keywords reference modal */}
       <KeywordsModal visible={props.showKeywordsModal} onClose={props.onCloseKeywords} />
@@ -176,5 +225,32 @@ const styles = StyleSheet.create({
   casterCol: {
     flex: 1,
     minWidth: 0,
+  },
+  errorBanner: {
+    width: '100%',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    backgroundColor: '#3A1E22',
+    borderWidth: 1,
+    borderColor: '#7F3D44',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  errorBannerText: {
+    color: '#FF8B8B',
+    fontSize: 13,
+    flex: 1,
+    minWidth: 0,
+  },
+  errorBannerDismiss: {
+    color: '#FF8B8B',
+    fontSize: 16,
+    fontWeight: '700',
+    paddingHorizontal: 4,
   },
 });
