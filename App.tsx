@@ -82,19 +82,72 @@ export default function App() {
   const [customizations, setCustomizations] = useState<Map<string, Customization>>(
     () => new Map()
   );
+  /**
+   * True when the user clicked a Supabase password-recovery link and is in
+   * the middle of setting a new password. While true:
+   *   - The data-loading effect below is suppressed (no leaking saved armies
+   *     or customizations into the temporary recovery session).
+   *   - LoginModal forces 'reset-password' mode regardless of underlying state.
+   *   - LandingScreen / AbilityTrackerScreen treat us as signed-out for
+   *     navigation purposes (no avatar, no auto-loaded armies in the header).
+   *
+   * Cleared by LoginModal's onRecoveryComplete callback once updateUser succeeds.
+   */
+  const [isRecoveringPassword, setIsRecoveringPassword] = useState(false);
+  /**
+   * Error parsed from the URL hash on initial page load (e.g., "otp_expired"
+   * if the recovery link timed out). Passed to LoginModal so it can show the
+   * message in the forgot-password panel and let the user request a new link.
+   */
+  const [recoveryHashError, setRecoveryHashError] = useState<string | null>(null);
 
   // Subscribe to Supabase auth events: SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED,
-  // USER_UPDATED (the last one fires when email gets verified in another tab).
-  // The listener is the single source of truth — every UI change flows through
-  // it, so the avatar updates automatically when the user signs in from the
-  // LoginModal or completes verification via a magic link.
+  // USER_UPDATED (fires when email gets verified in another tab), and
+  // PASSWORD_RECOVERY (fires when the user lands here via a reset link).
+  // The listener is the single source of truth — every UI change flows
+  // through it, so the avatar updates automatically when the user signs in
+  // from the LoginModal or completes verification via a magic link.
   useEffect(() => {
+    // ----- URL-hash error parsing (must run before subscribing) -----
+    // Supabase puts auth errors in the URL fragment when a token is invalid
+    // or expired, e.g.:
+    //   #error=access_denied&error_description=otp_expired&error_code=otp_expired
+    // The SDK strips the hash after exchanging valid tokens, so we have to
+    // check it ourselves on first load. We open the login modal in
+    // forgot-password mode so the user can immediately request a new link.
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const hash = window.location.hash.startsWith('#')
+        ? window.location.hash.slice(1)
+        : window.location.hash;
+      const params = new URLSearchParams(hash);
+      const errorDesc = params.get('error_description');
+      const errorCode = params.get('error_code');
+      if (errorDesc || errorCode) {
+        const friendly =
+          errorCode === 'otp_expired' || errorDesc?.includes('expired')
+            ? 'That reset link has expired. Request a new one below.'
+            : errorDesc?.replace(/\+/g, ' ') ?? 'That reset link is no longer valid.';
+        setRecoveryHashError(friendly);
+        setShowLoginModal(true);
+        // Wipe the hash so a page refresh doesn't re-show the same error.
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    }
+
     // Restore any existing session (returning visitor in the same browser).
     supabase.auth.getSession().then(({ data }) => {
       setUser(sessionToUser(data.session));
     });
 
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      // PASSWORD_RECOVERY fires after INITIAL_SESSION on the recovery landing.
+      // We MUST switch on event — checking only `session` here would be
+      // indistinguishable from a normal SIGNED_IN and would leak saved armies
+      // into the recovery session.
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsRecoveringPassword(true);
+        setShowLoginModal(true);
+      }
       setUser(sessionToUser(session));
     });
 
@@ -104,10 +157,17 @@ export default function App() {
   // Load saved armies + customizations whenever the verified user changes.
   // Verified-only: unverified users see the modal but the army list and
   // customization features are gated, so there's no point fetching for them.
-  // Signing out clears both immediately.
+  //
+  // CRITICAL: also gated on `!isRecoveringPassword`. During a recovery flow
+  // the user has a temporary verified session whose sole purpose is to set
+  // a new password. Fetching their data into that session would leak the
+  // user's saved armies to anyone who clicks an intercepted reset link
+  // (before they've proven control of the account by actually setting the
+  // new password). Once recovery completes, the flag clears and this effect
+  // re-runs to load the data normally.
   useEffect(() => {
     let cancelled = false;
-    if (user?.emailVerified) {
+    if (user?.emailVerified && !isRecoveringPassword) {
       // Fetch both in parallel — they're independent and we don't want the
       // slower one to delay the other appearing.
       Promise.all([getSavedArmies(), getAllCustomizations()]).then(
@@ -124,7 +184,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [user?.id, user?.emailVerified]);
+  }, [user?.id, user?.emailVerified, isRecoveringPassword]);
 
   /**
    * Parses a roster JSON and loads it into the tracker. Used both by the
@@ -204,12 +264,18 @@ export default function App() {
     if (ok) setShowLoginModal(false);
   }
 
+  // During recovery, screens see a "signed-out" user so the header / avatar
+  // / etc. don't tease the saved-armies UI before the password is actually
+  // reset. LoginModal still gets the real user so it can show which account
+  // is being recovered.
+  const screenUser = isRecoveringPassword ? null : user;
+
   return (
     <SafeAreaView style={styles.container}>
       {currentScreen === 'landing' ? (
         <LandingScreen
           onLoadJson={loadAbilitiesFromJson}
-          user={user}
+          user={screenUser}
           onOpenLogin={() => setShowLoginModal(true)}
         />
       ) : (
@@ -222,7 +288,7 @@ export default function App() {
           priests={priests}
           onAbilitiesChange={setAbilities}
           onBack={handleBackToHome}
-          user={user}
+          user={screenUser}
           onOpenLogin={() => setShowLoginModal(true)}
           customizations={customizations}
           onCustomizationsChange={setCustomizations}
@@ -239,6 +305,10 @@ export default function App() {
         onSaveArmy={handleSaveArmy}
         onDeleteArmy={handleDeleteArmy}
         onLoadSavedArmy={handleLoadSavedArmy}
+        isRecoveringPassword={isRecoveringPassword}
+        onRecoveryComplete={() => setIsRecoveringPassword(false)}
+        recoveryHashError={recoveryHashError}
+        onRecoveryHashErrorAcknowledged={() => setRecoveryHashError(null)}
       />
 
       <StatusBar style="auto" />
