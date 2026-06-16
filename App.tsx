@@ -10,9 +10,12 @@ import { parseAbilitiesFromJSON, type Wizard, type Priest } from './src/utils/js
 import type { User } from './src/types/user';
 import type { SavedArmy } from './src/types/army';
 import type { Customization } from './src/types/customization';
+import type { Profile } from './src/types/profile';
 import { supabase } from './src/lib/supabase';
 import { getSavedArmies, saveArmy, deleteArmy } from './src/utils/savedArmies';
 import { getAllCustomizations } from './src/utils/customizations';
+import { getMyProfile } from './src/utils/profiles';
+import UsernamePromptModal from './src/components/organisms/UsernamePromptModal';
 
 // ---------------------------------------------------------------------------
 // React Native Web dev-warning filter
@@ -100,6 +103,14 @@ export default function App() {
    * message in the forgot-password panel and let the user request a new link.
    */
   const [recoveryHashError, setRecoveryHashError] = useState<string | null>(null);
+  /**
+   * The verified user's multiplayer profile (username), or null if they haven't
+   * chosen one yet. Loaded alongside saved armies. Drives the "choose a
+   * username" prompt and (in later phases) challenge-by-handle.
+   */
+  const [profile, setProfile] = useState<Profile | null>(null);
+  /** Whether the username-claim modal is open. */
+  const [showUsernamePrompt, setShowUsernamePrompt] = useState(false);
 
   // Subscribe to Supabase auth events: SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED,
   // USER_UPDATED (fires when email gets verified in another tab), and
@@ -168,18 +179,19 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     if (user?.emailVerified && !isRecoveringPassword) {
-      // Fetch both in parallel — they're independent and we don't want the
-      // slower one to delay the other appearing.
-      Promise.all([getSavedArmies(), getAllCustomizations()]).then(
-        ([armies, customs]) => {
+      // Fetch in parallel — all independent; don't let the slow one block.
+      Promise.all([getSavedArmies(), getAllCustomizations(), getMyProfile()]).then(
+        ([armies, customs, myProfile]) => {
           if (cancelled) return;
           setSavedArmies(armies);
           setCustomizations(customs);
+          setProfile(myProfile);
         }
       );
     } else {
       setSavedArmies([]);
       setCustomizations(new Map());
+      setProfile(null);
     }
     return () => {
       cancelled = true;
@@ -309,6 +321,20 @@ export default function App() {
         onRecoveryComplete={() => setIsRecoveringPassword(false)}
         recoveryHashError={recoveryHashError}
         onRecoveryHashErrorAcknowledged={() => setRecoveryHashError(null)}
+        profile={profile}
+        onChooseUsername={() => {
+          // Close the account modal and open the username claim on top of it.
+          setShowLoginModal(false);
+          setShowUsernamePrompt(true);
+        }}
+      />
+
+      {/* Username claim — mounted at root so it can be opened from the account
+          modal (Phase 1) and the war-room lobby gate (later phases). */}
+      <UsernamePromptModal
+        visible={showUsernamePrompt}
+        onCreated={setProfile}
+        onClose={() => setShowUsernamePrompt(false)}
       />
 
       <StatusBar style="auto" />

@@ -18,6 +18,7 @@ import { supabase } from '../../lib/supabase';
 import type { User } from '../../types/user';
 import type { SavedArmy } from '../../types/army';
 import { MAX_SAVED_ARMIES } from '../../types/army';
+import type { Profile } from '../../types/profile';
 
 // ---------------------------------------------------------------------------
 // Caret color
@@ -163,6 +164,11 @@ interface LoginModalProps {
   recoveryHashError?: string | null;
   /** Clear the hash-error flag after the user has seen it / acted on it. */
   onRecoveryHashErrorAcknowledged?: () => void;
+  // ----- Multiplayer identity -----
+  /** The verified user's profile (username), or null if not chosen yet. */
+  profile?: Profile | null;
+  /** Open the username-claim modal (App closes this modal first). */
+  onChooseUsername?: () => void;
 }
 
 /**
@@ -198,6 +204,8 @@ export default function LoginModal({
   onRecoveryComplete,
   recoveryHashError,
   onRecoveryHashErrorAcknowledged,
+  profile,
+  onChooseUsername,
 }: LoginModalProps) {
   // Auth form state
   const [email, setEmail] = useState('');
@@ -725,8 +733,38 @@ export default function LoginModal({
                   <View style={styles.divider} />
 
                   {user.emailVerified ? (
-                    // ----- Verified: full saved-army management -----
+                    // ----- Verified: multiplayer identity + saved-army management -----
                     <>
+                      {/* Multiplayer handle — username for challenges. */}
+                      <View style={styles.section}>
+                        <Text style={styles.sectionTitle}>Multiplayer</Text>
+                        {profile ? (
+                          <View style={styles.usernameRow}>
+                            <Text style={styles.usernameHandle}>@{profile.username}</Text>
+                            <Text style={styles.usernameMeta}>
+                              Other players can challenge you with this handle.
+                            </Text>
+                          </View>
+                        ) : (
+                          <>
+                            <Text style={styles.emptyHint}>
+                              Choose a username so other players can challenge you to a war room.
+                            </Text>
+                            {onChooseUsername ? (
+                              <TouchableOpacity
+                                style={styles.saveCurrentBtn}
+                                onPress={onChooseUsername}
+                                activeOpacity={0.7}
+                              >
+                                <Text style={styles.saveCurrentText}>Choose username</Text>
+                              </TouchableOpacity>
+                            ) : null}
+                          </>
+                        )}
+                      </View>
+
+                      <View style={styles.divider} />
+
                       <View style={styles.section}>
                         <View style={styles.sectionHeader}>
                           <Text style={styles.sectionTitle}>Army Lists</Text>
@@ -1406,6 +1444,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontStyle: 'italic',
     paddingVertical: 6,
+  },
+  usernameRow: {
+    paddingVertical: 4,
+  },
+  usernameHandle: {
+    color: '#5BA9FF',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  usernameMeta: {
+    color: colors.textDim,
+    fontSize: 12,
+    marginTop: 2,
   },
   subtleHint: {
     color: colors.textDim,
