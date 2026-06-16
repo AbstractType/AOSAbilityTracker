@@ -7,6 +7,7 @@ import WarRoomLobbyScreen from './src/screens/WarRoomLobbyScreen';
 import WarRoomScreen from './src/screens/WarRoomScreen';
 import LoginModal from './src/components/organisms/LoginModal';
 import IncomingChallengeModal from './src/components/organisms/IncomingChallengeModal';
+import JoinByLinkModal from './src/components/organisms/JoinByLinkModal';
 import { StatusBar } from 'expo-status-bar';
 import type { Ability } from './src/types';
 import { parseAbilitiesFromJSON, type Wizard, type Priest } from './src/utils/jsonParser';
@@ -21,8 +22,12 @@ import { getMyProfile } from './src/utils/profiles';
 import UsernamePromptModal from './src/components/organisms/UsernamePromptModal';
 import type { Challenge, WarRoom } from './src/types/warRoom';
 import { rowToChallenge } from './src/utils/challenges';
-import { acceptChallenge, declineChallenge } from './src/utils/challenges';
+import { acceptChallenge, declineChallenge, claimInvite } from './src/utils/challenges';
 import { getRoom } from './src/utils/warRoom';
+
+/** localStorage key for an invite token awaiting a join (survives the
+ *  sign-in / email-verification reload round trip). */
+const INVITE_STORAGE_KEY = 'aos-pending-invite';
 
 // ---------------------------------------------------------------------------
 // React Native Web dev-warning filter
@@ -127,6 +132,10 @@ export default function App() {
   const [currentRoom, setCurrentRoom] = useState<WarRoom | null>(null);
   /** Opponent's handle to label their side in the room, when known. */
   const [roomOpponentLabel, setRoomOpponentLabel] = useState<string | undefined>(undefined);
+  /** Invite token from a ?challenge= link, pending a join (null when none). */
+  const [pendingInviteToken, setPendingInviteToken] = useState<string | null>(null);
+  /** Whether the join-by-link modal is open. */
+  const [showJoinModal, setShowJoinModal] = useState(false);
 
   // Subscribe to Supabase auth events: SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED,
   // USER_UPDATED (fires when email gets verified in another tab), and
@@ -135,6 +144,33 @@ export default function App() {
   // through it, so the avatar updates automatically when the user signs in
   // from the LoginModal or completes verification via a magic link.
   useEffect(() => {
+    // ----- Invite-link parsing (query string, NOT the hash) -----
+    // An invite link is `/?challenge=<token>`. We read the query synchronously
+    // on first mount (before any await), persist the token to localStorage so
+    // it survives the sign-in / email-verification reload, then strip it from
+    // the URL. The query string is separate from Supabase's auth hash, so the
+    // two never collide.
+    if (typeof window !== 'undefined') {
+      const qToken = new URLSearchParams(window.location.search).get('challenge');
+      let stored: string | null = null;
+      try {
+        stored = window.localStorage.getItem(INVITE_STORAGE_KEY);
+      } catch {
+        stored = null;
+      }
+      const token = qToken || stored;
+      if (qToken) {
+        try {
+          window.localStorage.setItem(INVITE_STORAGE_KEY, qToken);
+        } catch {
+          /* storage blocked — state still carries it for this session */
+        }
+        // Strip ?challenge from the URL (keep any hash for Supabase).
+        window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+      }
+      if (token) setPendingInviteToken(token);
+    }
+
     // ----- URL-hash error parsing (must run before subscribing) -----
     // Supabase puts auth errors in the URL fragment when a token is invalid
     // or expired, e.g.:
@@ -271,6 +307,18 @@ export default function App() {
     };
   }, [user?.id, user?.emailVerified, isRecoveringPassword, profile?.userId, enterRoom]);
 
+  // Pending invite link: once a token is present, either open the join modal
+  // (verified user) or prompt sign-in (the token persists in localStorage
+  // across the auth reload). Joining a link doesn't require a username.
+  useEffect(() => {
+    if (!pendingInviteToken || isRecoveringPassword) return;
+    if (user?.emailVerified) {
+      setShowJoinModal(true);
+    } else {
+      setShowLoginModal(true);
+    }
+  }, [pendingInviteToken, user?.emailVerified, isRecoveringPassword]);
+
   /**
    * Parses a roster JSON and loads it into the tracker. Used both by the
    * landing screen ("Load Abilities" button) and by tapping a saved army.
@@ -377,6 +425,26 @@ export default function App() {
     setCurrentScreen('lobby');
   }
 
+  function clearPendingInvite() {
+    setPendingInviteToken(null);
+    setShowJoinModal(false);
+    try {
+      if (typeof window !== 'undefined') window.localStorage.removeItem(INVITE_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Join a war room via an invite link with the chosen army. */
+  async function handleJoinByLink(token: string, armyJson: string, challengerUsername: string) {
+    // Throws on failure; JoinByLinkModal catches + surfaces it inline.
+    const room = await claimInvite(token, armyJson);
+    setCurrentRoom(room);
+    setRoomOpponentLabel(challengerUsername);
+    clearPendingInvite();
+    setCurrentScreen('warroom');
+  }
+
   // During recovery, screens see a "signed-out" user so the header / avatar
   // / etc. don't tease the saved-armies UI before the password is actually
   // reset. LoginModal still gets the real user so it can show which account
@@ -462,6 +530,15 @@ export default function App() {
         onAccept={handleAcceptChallenge}
         onDecline={handleDeclineChallenge}
         onClose={() => setIncomingChallenge(null)}
+      />
+
+      {/* Join-by-link — opened when the app is launched with a ?challenge= link. */}
+      <JoinByLinkModal
+        visible={showJoinModal && !!pendingInviteToken}
+        token={pendingInviteToken}
+        savedArmies={savedArmies}
+        onJoin={handleJoinByLink}
+        onClose={clearPendingInvite}
       />
 
       <StatusBar style="auto" />

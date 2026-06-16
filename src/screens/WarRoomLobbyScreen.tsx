@@ -14,6 +14,8 @@ import { useResponsive, getContentMaxWidth } from '../utils/responsive';
 import { searchUsers } from '../utils/profiles';
 import {
   createChallenge,
+  createLinkChallenge,
+  buildInviteUrl,
   getMyChallenges,
   cancelChallenge,
 } from '../utils/challenges';
@@ -62,6 +64,12 @@ export default function WarRoomLobbyScreen({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sentNotice, setSentNotice] = useState<string | null>(null);
+
+  // Shareable invite link
+  const [creatingLink, setCreatingLink] = useState(false);
+  const [linkUrl, setLinkUrl] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // Outgoing challenges
   const [outgoing, setOutgoing] = useState<Challenge[]>([]);
@@ -131,6 +139,39 @@ export default function WarRoomLobbyScreen({
     } catch {
       // Non-fatal; refresh will reconcile.
       refreshOutgoing();
+    }
+  }
+
+  async function handleCreateLink() {
+    if (!selectedArmy) return;
+    setCreatingLink(true);
+    setLinkError(null);
+    setLinkUrl(null);
+    setCopied(false);
+    try {
+      const challenge = await createLinkChallenge({
+        challengerUsername: profile.username,
+        armyJson: selectedArmy.json,
+      });
+      setLinkUrl(buildInviteUrl(challenge.inviteToken));
+      refreshOutgoing();
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : 'Could not create the invite link.');
+    } finally {
+      setCreatingLink(false);
+    }
+  }
+
+  async function handleCopyLink() {
+    if (!linkUrl) return;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(linkUrl);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+    } catch {
+      // Clipboard blocked — the URL is shown for manual copy anyway.
     }
   }
 
@@ -225,6 +266,37 @@ export default function WarRoomLobbyScreen({
             disabled={!canSend}
           />
         </View>
+
+        {/* Or share a link (no specific opponent needed) */}
+        <View style={styles.orDivider}>
+          <View style={styles.orLine} />
+          <Text style={styles.orText}>or share a link</Text>
+          <View style={styles.orLine} />
+        </View>
+        <Text style={styles.linkBlurb}>
+          Create an invite link to send via WhatsApp, Discord, etc. Whoever opens it can join
+          with their own army.
+        </Text>
+        {linkError ? <Text style={styles.errorText}>{linkError}</Text> : null}
+        {linkUrl ? (
+          <View style={styles.linkBox}>
+            <Text style={styles.linkUrl} numberOfLines={2} selectable>
+              {linkUrl}
+            </Text>
+            <TouchableOpacity style={styles.copyBtn} onPress={handleCopyLink} activeOpacity={0.8}>
+              <Text style={styles.copyBtnText}>{copied ? 'Copied!' : 'Copy link'}</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={styles.sendRow}>
+            <Button
+              label={creatingLink ? 'Creating…' : 'Create invite link'}
+              onPress={handleCreateLink}
+              variant="secondary"
+              disabled={!selectedArmy || creatingLink}
+            />
+          </View>
+        )}
 
         {/* Outgoing */}
         {outgoing.length > 0 ? (
@@ -369,6 +441,55 @@ const styles = StyleSheet.create({
   sendRow: {
     marginTop: 16,
     alignItems: 'flex-start',
+  },
+  orDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 24,
+    marginBottom: 12,
+  },
+  orLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#22324A',
+  },
+  orText: {
+    color: colors.textDim,
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  linkBlurb: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  linkBox: {
+    backgroundColor: '#101725',
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: '#3F66D6',
+    padding: 12,
+    gap: 10,
+  },
+  linkUrl: {
+    color: '#9DBDFF',
+    fontSize: 13,
+  },
+  copyBtn: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#3F66D6',
+    borderRadius: radii.md,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  copyBtnText: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
   },
   outgoingRow: {
     flexDirection: 'row',

@@ -18,6 +18,8 @@ export interface Challenge {
   challengerUsername: string;
   opponentId: string | null;
   opponentEmail: string | null;
+  /** Token embedded in a shareable invite link (?challenge=<token>). */
+  inviteToken: string;
   status: ChallengeStatus;
   /** Raw BattleScribe JSON of the challenger's chosen army. */
   challengerArmyJson: string;
