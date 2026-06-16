@@ -1,10 +1,6 @@
 import { supabase } from '../lib/supabase';
 import type { Ability } from '../types';
-import {
-  abilityKey,
-  keyForAbility,
-  type Customization,
-} from '../types/customization';
+import { abilityKey, type Customization } from '../types/customization';
 
 /**
  * Supabase-backed per-user ability customization layer (hide / note / sort).
@@ -121,8 +117,8 @@ export async function setNote(ability: Ability, note: string): Promise<void> {
 /**
  * Persist an already-ordered list of abilities as the phase's sort order:
  * writes contiguous sort_order values (0, 1, 2, ...) matching the array
- * order. Used by both the Move Up/Down buttons (via moveAbility) and the
- * drag-and-drop reorder, which produce an arbitrary final permutation.
+ * order. Used by the drag-and-drop reorder, which produces an arbitrary
+ * final permutation.
  *
  * Why rewrite the whole phase instead of touching only changed rows: it
  * keeps the math trivial (no fractional indexing, no NULL-tiebreak quirks)
@@ -147,31 +143,4 @@ export async function persistPhaseOrder(orderedAbilities: Ability[]): Promise<vo
   if (error) {
     throw new Error(error.message || 'Could not reorder. Try again.');
   }
-}
-
-/**
- * Move an ability one position up or down within its phase. The caller
- * supplies the current ordered list of abilities in that phase (already
- * sorted using whatever sort_order overrides are in effect); we compute
- * the swap, then persist the whole phase's new order.
- */
-export async function moveAbility(
-  ability: Ability,
-  phaseAbilities: Ability[],
-  direction: 'up' | 'down'
-): Promise<void> {
-  const targetKey = keyForAbility(ability);
-  const idx = phaseAbilities.findIndex(a => keyForAbility(a) === targetKey);
-  if (idx === -1) {
-    // The ability isn't in the phase we were told it's in — caller bug,
-    // but bail quietly rather than corrupting data.
-    return;
-  }
-  const swapWith = direction === 'up' ? idx - 1 : idx + 1;
-  if (swapWith < 0 || swapWith >= phaseAbilities.length) return; // already at boundary
-
-  const reordered = [...phaseAbilities];
-  [reordered[idx], reordered[swapWith]] = [reordered[swapWith], reordered[idx]];
-
-  await persistPhaseOrder(reordered);
 }

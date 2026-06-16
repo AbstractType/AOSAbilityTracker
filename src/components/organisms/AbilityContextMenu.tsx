@@ -20,14 +20,10 @@ interface AbilityContextMenuProps {
   ability: Ability | null;
   /** That ability's current customization (or undefined if none). */
   customization?: Customization;
-  /** Position info so we can grey out Move Up at the top, Move Down at bottom. */
-  positionInPhase?: { index: number; total: number };
   /** Current user (for gating signed-in actions). */
   user: User | null;
   onClose: () => void;
   // ---- Verified-user actions (async; reject with friendly Error on failure) ----
-  onMoveUp?: (ability: Ability) => Promise<void>;
-  onMoveDown?: (ability: Ability) => Promise<void>;
   onEditNote?: (ability: Ability) => void;
   onToggleHidden?: (ability: Ability, hidden: boolean) => Promise<void>;
   // ---- Signed-out / unverified ----
@@ -35,13 +31,14 @@ interface AbilityContextMenuProps {
   onOpenLogin?: () => void;
 }
 
-type ActionId = 'up' | 'down' | 'hide';
+type ActionId = 'hide';
 
 /**
  * AbilityContextMenu — the action sheet that appears on long-press of an
  * ability card. Surfaces three states cleanly:
  *
- *  • Signed-in + verified: full menu (Move Up, Move Down, Note, Hide/Unhide)
+ *  • Signed-in + verified: Note + Hide/Unhide. (Reordering is done by drag in
+ *    Reorder mode, not from this menu.)
  *  • Signed-in + unverified: same look but body says "Verify your email
  *    to customize abilities" with a button to open the login modal where
  *    the verification banner + Resend live.
@@ -55,11 +52,8 @@ export default function AbilityContextMenu({
   visible,
   ability,
   customization,
-  positionInPhase,
   user,
   onClose,
-  onMoveUp,
-  onMoveDown,
   onEditNote,
   onToggleHidden,
   onOpenLogin,
@@ -88,9 +82,8 @@ export default function AbilityContextMenu({
     setError(null);
     try {
       await fn();
-      // For move/hide we close immediately on success so the user sees the
-      // result in the list behind. For note editing we let the editor modal
-      // take over.
+      // Close immediately on success so the user sees the result (e.g. the
+      // card disappearing when hidden) in the list behind.
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');
@@ -103,10 +96,6 @@ export default function AbilityContextMenu({
 
   const isHidden = !!customization?.hidden;
   const hasNote = !!customization?.note;
-  const atTop = positionInPhase ? positionInPhase.index === 0 : false;
-  const atBottom = positionInPhase
-    ? positionInPhase.index >= positionInPhase.total - 1
-    : false;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
@@ -138,26 +127,6 @@ export default function AbilityContextMenu({
           <View style={styles.body}>
             {canCustomize ? (
               <>
-                {/* ----- Reorder ----- */}
-                <MenuRow
-                  icon="▲"
-                  label="Move up"
-                  hint={atTop ? 'Already at top' : 'Reorder within this phase'}
-                  disabled={atTop || !!busy || !onMoveUp}
-                  busy={busy === 'up'}
-                  onPress={() => onMoveUp && runAction('up', () => onMoveUp(ability))}
-                />
-                <MenuRow
-                  icon="▼"
-                  label="Move down"
-                  hint={atBottom ? 'Already at bottom' : 'Reorder within this phase'}
-                  disabled={atBottom || !!busy || !onMoveDown}
-                  busy={busy === 'down'}
-                  onPress={() => onMoveDown && runAction('down', () => onMoveDown(ability))}
-                />
-
-                <View style={styles.divider} />
-
                 {/* ----- Note ----- */}
                 <MenuRow
                   icon="📝"

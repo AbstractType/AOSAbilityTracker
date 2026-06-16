@@ -5,7 +5,6 @@ import type { User } from '../types/user';
 import type { Customization } from '../types/customization';
 import { keyForAbility } from '../types/customization';
 import {
-  moveAbility as moveAbilityRequest,
   persistPhaseOrder as persistPhaseOrderRequest,
   setHidden as setHiddenRequest,
   setNote as setNoteRequest,
@@ -277,47 +276,12 @@ export default function AbilityTrackerScreen({
     }
   }
 
-  async function handleMove(ability: Ability, direction: 'up' | 'down') {
-    // Reorder math has to match what the DB side does, so we use the same
-    // phase ordering both for the optimistic update and for the request.
-    const phaseAbilities =
-      displaySections.find(s => s.phase === ability.phase)?.items ?? [];
-    const idx = phaseAbilities.findIndex(a => keyForAbility(a) === keyForAbility(ability));
-    if (idx === -1) return;
-    const swapWith = direction === 'up' ? idx - 1 : idx + 1;
-    if (swapWith < 0 || swapWith >= phaseAbilities.length) return;
-
-    const reordered = [...phaseAbilities];
-    [reordered[idx], reordered[swapWith]] = [reordered[swapWith], reordered[idx]];
-
-    const prev = customizations;
-    const next = new Map(customizations);
-    reordered.forEach((a, i) => {
-      const k = keyForAbility(a);
-      const existing = next.get(k);
-      next.set(k, {
-        abilityName: a.name,
-        abilitySource: a.source ?? '',
-        hidden: existing?.hidden ?? false,
-        note: existing?.note ?? null,
-        sortOrder: i,
-      });
-    });
-    onCustomizationsChange(next);
-
-    try {
-      await moveAbilityRequest(ability, phaseAbilities, direction);
-    } catch (err) {
-      onCustomizationsChange(prev);
-      throw err;
-    }
-  }
-
   /**
-   * Commit a full new order for a phase after a drag-and-drop. Mirrors
-   * handleMove's optimistic pattern, but surfaces failures via the inline
-   * `reorderError` banner instead of throwing — the drag list has no host
-   * modal to catch a thrown error, and Alert is a no-op on web.
+   * Commit a full new order for a phase after a drag-and-drop. Optimistically
+   * updates the local customizations Map (writing sortOrder per ability), then
+   * persists; surfaces failures via the inline `reorderError` banner instead
+   * of throwing — the drag list has no host modal to catch a thrown error, and
+   * Alert is a no-op on web.
    */
   async function handleCommitPhaseOrder(_phase: Phase, reordered: Ability[]) {
     const prev = customizations;
@@ -346,19 +310,6 @@ export default function AbilityTrackerScreen({
       );
     }
   }
-
-  // Position of the context-menu's ability within its phase, so the menu
-  // can grey out Move Up at the top and Move Down at the bottom.
-  const contextPosition = useMemo(() => {
-    if (!contextAbility) return undefined;
-    const phaseItems =
-      displaySections.find(s => s.phase === contextAbility.phase)?.items ?? [];
-    const idx = phaseItems.findIndex(
-      a => keyForAbility(a) === keyForAbility(contextAbility)
-    );
-    if (idx === -1) return undefined;
-    return { index: idx, total: phaseItems.length };
-  }, [contextAbility, displaySections]);
 
   const noteEditCustomization = noteEditAbility
     ? customizations.get(keyForAbility(noteEditAbility))
@@ -405,11 +356,8 @@ export default function AbilityTrackerScreen({
         customization={
           contextAbility ? customizations.get(keyForAbility(contextAbility)) : undefined
         }
-        positionInPhase={contextPosition}
         user={user}
         onClose={() => setContextAbility(null)}
-        onMoveUp={a => handleMove(a, 'up')}
-        onMoveDown={a => handleMove(a, 'down')}
         onEditNote={a => setNoteEditAbility(a)}
         onToggleHidden={handleToggleHidden}
         onOpenLogin={onOpenLogin}
