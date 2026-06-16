@@ -3,7 +3,10 @@ import { Alert, SafeAreaView, StyleSheet } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
 import LandingScreen from './src/screens/LandingScreen';
 import AbilityTrackerScreen from './src/screens/AbilityTrackerScreen';
+import WarRoomLobbyScreen from './src/screens/WarRoomLobbyScreen';
+import WarRoomScreen from './src/screens/WarRoomScreen';
 import LoginModal from './src/components/organisms/LoginModal';
+import IncomingChallengeModal from './src/components/organisms/IncomingChallengeModal';
 import { StatusBar } from 'expo-status-bar';
 import type { Ability } from './src/types';
 import { parseAbilitiesFromJSON, type Wizard, type Priest } from './src/utils/jsonParser';
@@ -16,6 +19,10 @@ import { getSavedArmies, saveArmy, deleteArmy } from './src/utils/savedArmies';
 import { getAllCustomizations } from './src/utils/customizations';
 import { getMyProfile } from './src/utils/profiles';
 import UsernamePromptModal from './src/components/organisms/UsernamePromptModal';
+import type { Challenge, WarRoom } from './src/types/warRoom';
+import { rowToChallenge } from './src/utils/challenges';
+import { acceptChallenge, declineChallenge } from './src/utils/challenges';
+import { getRoom } from './src/utils/warRoom';
 
 // ---------------------------------------------------------------------------
 // React Native Web dev-warning filter
@@ -52,7 +59,9 @@ function sessionToUser(session: Session | null): User | null {
 }
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState<'landing' | 'tracker'>('landing');
+  const [currentScreen, setCurrentScreen] = useState<
+    'landing' | 'tracker' | 'lobby' | 'warroom'
+  >('landing');
   const [abilities, setAbilities] = useState<Ability[]>([]);
   const [wizards, setWizards] = useState<Wizard[]>([]);
   const [priests, setPriests] = useState<Priest[]>([]);
@@ -111,6 +120,13 @@ export default function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   /** Whether the username-claim modal is open. */
   const [showUsernamePrompt, setShowUsernamePrompt] = useState(false);
+  // ---- War room ----
+  /** An incoming challenge to show in the accept/decline modal, or null. */
+  const [incomingChallenge, setIncomingChallenge] = useState<Challenge | null>(null);
+  /** The war room the user is currently in (drives the 'warroom' screen). */
+  const [currentRoom, setCurrentRoom] = useState<WarRoom | null>(null);
+  /** Opponent's handle to label their side in the room, when known. */
+  const [roomOpponentLabel, setRoomOpponentLabel] = useState<string | undefined>(undefined);
 
   // Subscribe to Supabase auth events: SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED,
   // USER_UPDATED (fires when email gets verified in another tab), and
@@ -199,6 +215,63 @@ export default function App() {
   }, [user?.id, user?.emailVerified, isRecoveringPassword]);
 
   /**
+   * Fetch a war room and switch into it. Used both when WE accept a challenge
+   * and when an opponent accepts OUR challenge (via the realtime UPDATE below).
+   */
+  const enterRoom = useCallback(async (roomId: string, opponentLabel?: string) => {
+    const room = await getRoom(roomId);
+    if (!room) return;
+    setCurrentRoom(room);
+    setRoomOpponentLabel(opponentLabel);
+    setIncomingChallenge(null);
+    setShowLoginModal(false);
+    setCurrentScreen('warroom');
+  }, []);
+
+  // Incoming-challenge realtime. While signed in with a profile, listen for
+  // challenges addressed to us (→ show the accept/decline modal) and for our
+  // own sent challenges being accepted (→ jump into the room). RLS scopes the
+  // changefeed to rows we're actually involved in, so no manual auth checks
+  // beyond the id comparisons below are needed for security.
+  useEffect(() => {
+    if (!user?.emailVerified || isRecoveringPassword || !profile) return;
+    const myId = user.id;
+
+    const channel = supabase
+      .channel('challenges-inbox')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'challenges' },
+        (payload) => {
+          const ch = rowToChallenge(payload.new as any);
+          if (ch.opponentId === myId && ch.status === 'pending') {
+            setIncomingChallenge(ch);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'challenges' },
+        (payload) => {
+          const ch = rowToChallenge(payload.new as any);
+          // Our outgoing challenge was accepted → enter the room.
+          if (ch.challengerId === myId && ch.status === 'accepted' && ch.roomId) {
+            enterRoom(ch.roomId);
+          }
+          // An incoming challenge we were shown got resolved elsewhere → dismiss.
+          if (ch.opponentId === myId && ch.status !== 'pending') {
+            setIncomingChallenge((cur) => (cur && cur.id === ch.id ? null : cur));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id, user?.emailVerified, isRecoveringPassword, profile?.userId, enterRoom]);
+
+  /**
    * Parses a roster JSON and loads it into the tracker. Used both by the
    * landing screen ("Load Abilities" button) and by tapping a saved army.
    * Returns true on success so callers can decide whether to navigate, close
@@ -276,6 +349,34 @@ export default function App() {
     if (ok) setShowLoginModal(false);
   }
 
+  // ---- War room handlers ----
+  /** Accept an incoming challenge with the chosen army → create + enter room. */
+  async function handleAcceptChallenge(challenge: Challenge, armyJson: string) {
+    // Throws on failure; IncomingChallengeModal catches + surfaces it inline.
+    const room = await acceptChallenge(challenge.id, armyJson);
+    setCurrentRoom(room);
+    setRoomOpponentLabel(challenge.challengerUsername);
+    setIncomingChallenge(null);
+    setCurrentScreen('warroom');
+  }
+
+  async function handleDeclineChallenge(challenge: Challenge) {
+    await declineChallenge(challenge.id);
+    setIncomingChallenge(null);
+  }
+
+  function handleLeaveRoom() {
+    setCurrentRoom(null);
+    setRoomOpponentLabel(undefined);
+    setCurrentScreen('landing');
+  }
+
+  /** Open the war-room lobby (entry point from the Account modal). */
+  function openLobby() {
+    setShowLoginModal(false);
+    setCurrentScreen('lobby');
+  }
+
   // During recovery, screens see a "signed-out" user so the header / avatar
   // / etc. don't tease the saved-armies UI before the password is actually
   // reset. LoginModal still gets the real user so it can show which account
@@ -284,7 +385,21 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {currentScreen === 'landing' ? (
+      {currentScreen === 'lobby' && profile && user ? (
+        <WarRoomLobbyScreen
+          profile={profile}
+          savedArmies={savedArmies}
+          userId={user.id}
+          onBack={() => setCurrentScreen('landing')}
+        />
+      ) : currentScreen === 'warroom' && currentRoom && user ? (
+        <WarRoomScreen
+          room={currentRoom}
+          userId={user.id}
+          opponentLabel={roomOpponentLabel}
+          onLeave={handleLeaveRoom}
+        />
+      ) : currentScreen === 'landing' ? (
         <LandingScreen
           onLoadJson={loadAbilitiesFromJson}
           user={screenUser}
@@ -327,6 +442,8 @@ export default function App() {
           setShowLoginModal(false);
           setShowUsernamePrompt(true);
         }}
+        // War-room entry: only when the user has claimed a username.
+        onEnterWarRoom={profile ? openLobby : undefined}
       />
 
       {/* Username claim — mounted at root so it can be opened from the account
@@ -335,6 +452,16 @@ export default function App() {
         visible={showUsernamePrompt}
         onCreated={setProfile}
         onClose={() => setShowUsernamePrompt(false)}
+      />
+
+      {/* Incoming challenge — popped by the realtime inbox subscription. */}
+      <IncomingChallengeModal
+        visible={!!incomingChallenge}
+        challenge={incomingChallenge}
+        savedArmies={savedArmies}
+        onAccept={handleAcceptChallenge}
+        onDecline={handleDeclineChallenge}
+        onClose={() => setIncomingChallenge(null)}
       />
 
       <StatusBar style="auto" />

@@ -169,6 +169,8 @@ interface LoginModalProps {
   profile?: Profile | null;
   /** Open the username-claim modal (App closes this modal first). */
   onChooseUsername?: () => void;
+  /** Enter the war-room lobby. Provided only when the user has a username. */
+  onEnterWarRoom?: () => void;
 }
 
 /**
@@ -206,6 +208,7 @@ export default function LoginModal({
   onRecoveryHashErrorAcknowledged,
   profile,
   onChooseUsername,
+  onEnterWarRoom,
 }: LoginModalProps) {
   // Auth form state
   const [email, setEmail] = useState('');
@@ -739,12 +742,23 @@ export default function LoginModal({
                       <View style={styles.section}>
                         <Text style={styles.sectionTitle}>Multiplayer</Text>
                         {profile ? (
-                          <View style={styles.usernameRow}>
-                            <Text style={styles.usernameHandle}>@{profile.username}</Text>
-                            <Text style={styles.usernameMeta}>
-                              Other players can challenge you with this handle.
-                            </Text>
-                          </View>
+                          <>
+                            <View style={styles.usernameRow}>
+                              <Text style={styles.usernameHandle}>@{profile.username}</Text>
+                              <Text style={styles.usernameMeta}>
+                                Other players can challenge you with this handle.
+                              </Text>
+                            </View>
+                            {onEnterWarRoom ? (
+                              <TouchableOpacity
+                                style={styles.warRoomBtn}
+                                onPress={onEnterWarRoom}
+                                activeOpacity={0.85}
+                              >
+                                <Text style={styles.warRoomBtnText}>⚔️  Enter War Room</Text>
+                              </TouchableOpacity>
+                            ) : null}
+                          </>
                         ) : (
                           <>
                             <Text style={styles.emptyHint}>
@@ -1457,6 +1471,18 @@ const styles = StyleSheet.create({
     color: colors.textDim,
     fontSize: 12,
     marginTop: 2,
+  },
+  warRoomBtn: {
+    marginTop: 12,
+    backgroundColor: '#3F66D6',
+    borderRadius: radii.md,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  warRoomBtnText: {
+    color: colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '700',
   },
   subtleHint: {
     color: colors.textDim,
