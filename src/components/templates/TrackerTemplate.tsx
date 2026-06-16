@@ -175,16 +175,16 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
         </View>
       ) : null}
 
-      {/* Ability list: drag-sortable single column in reorder mode, otherwise
-          the normal masonry grid. */}
+      {/* Ability list: in reorder mode the same masonry grid but with wiggling,
+          drag-sortable cards; otherwise the normal masonry grid. Both use the
+          identical width + column count so toggling doesn't shift the layout. */}
       {props.reorderMode ? (
         <ReorderableAbilityList
           sections={props.displaySections}
           customizations={props.customizations}
-          // Clamp to a comfortable single-column width so cards don't stretch
-          // absurdly wide on desktop while reordering.
-          contentMaxWidth={Math.min(contentMaxWidth, 600)}
+          contentMaxWidth={contentMaxWidth}
           horizontalPadding={horizontalPadding}
+          cardColumns={cardColumns}
           onCommitPhaseOrder={props.onCommitPhaseOrder}
         />
       ) : (

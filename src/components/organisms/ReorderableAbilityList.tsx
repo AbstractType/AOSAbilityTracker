@@ -1,12 +1,13 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Animated,
   PanResponder,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   View,
-  type LayoutChangeEvent,
+  type PanResponderGestureState,
 } from 'react-native';
 import type { Ability, Phase } from '../../types';
 import type { Customization } from '../../types/customization';
@@ -24,10 +25,12 @@ interface ReorderableAbilityListProps {
   sections: PhaseSection[];
   /** Per-ability customization map (drives note / hidden styling on cards). */
   customizations: Map<string, Customization>;
-  /** Max content width — passed in already clamped (~600) for the single column. */
+  /** Max content width (same as the normal list so layout matches). */
   contentMaxWidth: number;
   /** Horizontal padding inside the list. */
   horizontalPadding: number;
+  /** Columns for the masonry grid (same as the normal list). */
+  cardColumns: number;
   /**
    * Commit a phase's new order. The screen does the optimistic update +
    * Supabase persist + revert-on-error.
@@ -35,35 +38,63 @@ interface ReorderableAbilityListProps {
   onCommitPhaseOrder: (phase: Phase, reordered: Ability[]) => void;
 }
 
-// Vertical gap between cards — matches the masonry column gap so toggling
-// reorder mode on/off doesn't visibly change spacing.
 const GAP = 14;
-// How much the picked-up card grows, as a subtle "lifted" affordance.
-const LIFT_SCALE = 1.03;
+// How long (ms) the user must hold a card before a move becomes a drag. Below
+// this, a finger-move is treated as a scroll — so the list still scrolls
+// normally and only a deliberate press-and-hold picks a card up.
+const HOLD_TO_DRAG_MS = 180;
+
+// ---------------------------------------------------------------------------
+// Wiggle animation (web): a subtle looping rotation on every card so it reads
+// as "draggable", like iOS home-screen edit mode. Injected once as real CSS
+// (far cheaper than driving dozens of JS-driven Animated loops). Three phase
+// variants keep neighbouring cards from wiggling in lockstep.
+// ---------------------------------------------------------------------------
+const WIGGLE_STYLE_ID = 'aos-reorder-wiggle';
+function injectWiggleCssOnce() {
+  if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+  if (document.getElementById(WIGGLE_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = WIGGLE_STYLE_ID;
+  style.textContent = `
+    @keyframes aosWiggle {
+      0%   { transform: rotate(-1.4deg); }
+      50%  { transform: rotate(1.4deg); }
+      100% { transform: rotate(-1.4deg); }
+    }
+    [data-wiggle="0"] { animation: aosWiggle 0.30s ease-in-out infinite; animation-delay: 0s; }
+    [data-wiggle="1"] { animation: aosWiggle 0.33s ease-in-out infinite; animation-delay: -0.11s; }
+    [data-wiggle="2"] { animation: aosWiggle 0.28s ease-in-out infinite; animation-delay: -0.19s; }
+  `;
+  document.head.appendChild(style);
+}
 
 /**
- * ReorderableAbilityList — the single-column, drag-to-reorder view shown when
- * the tracker is in Reorder mode. Each phase is an independent sortable
- * (`SortablePhase`), which structurally enforces the "within-phase only"
- * rule: there is no shared index space across phases, so a card can never be
- * dragged into another phase's section.
+ * ReorderableAbilityList — the drag-to-reorder view shown when the tracker is
+ * in Reorder mode. It renders the SAME masonry grid as the normal list, but
+ * every card wiggles to signal it's draggable, and each card can be
+ * press-held and dragged to a new slot within its phase.
  *
- * It deliberately uses a plain ScrollView rather than the normal masonry
- * FlatList: a FlatList virtualizes rows and would unmount the card mid-drag.
- * Phases are 5-15 cards, so a non-virtualized list is cheap here.
+ * Each phase is an independent sortable (`SortablePhase`), which structurally
+ * enforces "within-phase only": there's no shared index space across phases,
+ * so a card can never land in another phase's section.
  *
- * Dragging is hand-rolled with PanResponder + Animated (no gesture/animation
- * libraries), which works identically on touch and mouse via React Native Web.
+ * Hand-rolled with PanResponder + Animated (no gesture/animation libraries),
+ * working on touch and mouse via React Native Web. Drop targeting measures
+ * each card's on-screen rect at pickup and hit-tests the pointer against them.
  */
 export default function ReorderableAbilityList({
   sections,
   customizations,
   contentMaxWidth,
   horizontalPadding,
+  cardColumns,
   onCommitPhaseOrder,
 }: ReorderableAbilityListProps) {
-  // While any phase is mid-drag, disable ScrollView scrolling so the parent
-  // pan doesn't fight the card drag on touch devices.
+  injectWiggleCssOnce();
+
+  // While any card is mid-drag, disable ScrollView scrolling so the parent pan
+  // doesn't fight the card drag on touch.
   const [dragging, setDragging] = useState(false);
 
   return (
@@ -77,7 +108,8 @@ export default function ReorderableAbilityList({
     >
       <View style={[styles.hintBox, { marginHorizontal: horizontalPadding }]}>
         <Text style={styles.hintText}>
-          Drag the ⠿ handle to reorder cards within a phase. Changes save automatically.
+          Press and hold a card, then drag it to a new spot within its phase.
+          Changes save automatically — tap ✓ in the header when done.
         </Text>
       </View>
 
@@ -89,6 +121,7 @@ export default function ReorderableAbilityList({
             items={section.items}
             customizations={customizations}
             horizontalPadding={horizontalPadding}
+            cardColumns={cardColumns}
             onDragActiveChange={setDragging}
             onCommit={(reordered) => onCommitPhaseOrder(section.phase, reordered)}
           />
@@ -99,14 +132,22 @@ export default function ReorderableAbilityList({
 }
 
 // ---------------------------------------------------------------------------
-// SortablePhase — one phase's independent sortable column
+// SortablePhase — one phase's independent masonry sortable
 // ---------------------------------------------------------------------------
+
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 interface SortablePhaseProps {
   phase: Phase;
   items: Ability[];
   customizations: Map<string, Customization>;
   horizontalPadding: number;
+  cardColumns: number;
   onDragActiveChange: (active: boolean) => void;
   onCommit: (reordered: Ability[]) => void;
 }
@@ -116,243 +157,269 @@ function SortablePhase({
   items,
   customizations,
   horizontalPadding,
+  cardColumns,
   onDragActiveChange,
   onCommit,
 }: SortablePhaseProps) {
-  // Index of the row currently being dragged, or null when idle.
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [targetIndex, setTargetIndex] = useState<number | null>(null);
 
-  // One shift Animated.Value per row, used to open a gap as a card is dragged
-  // over a slot. Recreated only when the row count changes (never mid-drag,
-  // since the array is frozen during a gesture).
-  const shifts = useMemo(
-    () => items.map(() => new Animated.Value(0)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items.length]
-  );
+  // Shared drag transform — only the active card reads these.
+  const drag = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const scale = useRef(new Animated.Value(1)).current;
 
-  // Measured row heights (index-aligned). Populated by each row's onLayout.
-  const heightsRef = useRef<number[]>([]);
-  // Cumulative tops captured at drag start (frozen layout during the gesture).
-  const topsRef = useRef<number[]>([]);
-  // Frozen snapshot of the item order at drag start.
-  const snapshotRef = useRef<Ability[]>([]);
-  // from = where the drag started; to = current target slot.
+  // Per-card node refs (for measureInWindow) and their measured screen rects,
+  // both keyed by linear index.
+  const nodeRefs = useRef<Array<View | null>>([]);
+  const rectsRef = useRef<Array<Rect | null>>([]);
+  // Pointer screen position at pickup, so move-deltas map back to screen space.
+  const grantPointer = useRef({ x: 0, y: 0 });
   const fromRef = useRef(0);
-  const toRef = useRef(0);
+  const targetRef = useRef<number | null>(null);
+  const snapshotRef = useRef<Ability[]>([]);
 
-  // translateY of the dragged row (follows the finger), and its lift scale.
-  const dragY = useRef(new Animated.Value(0)).current;
-  const dragScale = useRef(new Animated.Value(1)).current;
-
-  // Latest handlers in a ref so each row's PanResponder (created once) always
-  // calls fresh closures instead of stale ones.
+  // Latest handlers in a ref so each card's once-created PanResponder always
+  // calls fresh closures (items/indices change across commits).
   const handlers = useRef({
-    onGrant: (_from: number) => {},
-    onMove: (_from: number, _dy: number) => {},
+    onGrant: (_from: number, _g: PanResponderGestureState) => {},
+    onMove: (_from: number, _g: PanResponderGestureState) => {},
     onRelease: (_from: number) => {},
   });
 
-  function registerHeight(index: number, height: number) {
-    heightsRef.current[index] = height;
-  }
-
-  handlers.current.onGrant = (from: number) => {
-    const heights = heightsRef.current;
-    // Guard: don't start a drag until every row has been measured, otherwise
-    // the target-index math runs on zeros.
-    if (heights.length < items.length || heights.some((h) => !h)) return;
-
-    // Freeze layout + order for the duration of the gesture.
-    const tops: number[] = [];
-    let acc = 0;
-    for (let i = 0; i < heights.length; i++) {
-      tops[i] = acc;
-      acc += heights[i] + GAP;
-    }
-    topsRef.current = tops;
+  handlers.current.onGrant = (from, g) => {
     snapshotRef.current = [...items];
     fromRef.current = from;
-    toRef.current = from;
+    targetRef.current = from;
+    grantPointer.current = { x: g.x0, y: g.y0 };
 
-    dragY.setValue(0);
+    // Snapshot every card's on-screen rect. measureInWindow is async but
+    // resolves within a frame — well before the user releases.
+    rectsRef.current = [];
+    nodeRefs.current.forEach((node, i) => {
+      if (node && typeof (node as any).measureInWindow === 'function') {
+        (node as any).measureInWindow((x: number, y: number, w: number, h: number) => {
+          rectsRef.current[i] = { x, y, w, h };
+        });
+      }
+    });
+
+    drag.setValue({ x: 0, y: 0 });
     setDragIndex(from);
+    setTargetIndex(from);
     onDragActiveChange(true);
-    Animated.spring(dragScale, {
-      toValue: LIFT_SCALE,
+    Animated.spring(scale, {
+      toValue: 1.05,
       useNativeDriver: false,
       bounciness: 6,
     }).start();
   };
 
-  handlers.current.onMove = (from: number, dy: number) => {
-    dragY.setValue(dy);
+  handlers.current.onMove = (_from, g) => {
+    drag.setValue({ x: g.dx, y: g.dy });
 
-    const heights = heightsRef.current;
-    const tops = topsRef.current;
-    if (!tops.length) return;
+    const px = grantPointer.current.x + g.dx;
+    const py = grantPointer.current.y + g.dy;
+    const rects = rectsRef.current;
 
-    const draggedCenter = tops[from] + dy + heights[from] / 2;
-    const to = computeTarget(draggedCenter, from, tops, heights);
-
-    if (to !== toRef.current) {
-      toRef.current = to;
-      const lift = heights[from] + GAP;
-      // Open the gap: cards between `from` and `to` slide to fill the vacated
-      // slot, leaving a hole at the target index.
-      for (let i = 0; i < shifts.length; i++) {
-        if (i === from) continue;
-        let target = 0;
-        if (from < to && i > from && i <= to) target = -lift;
-        else if (from > to && i < from && i >= to) target = lift;
-        Animated.spring(shifts[i], {
-          toValue: target,
-          useNativeDriver: false,
-          bounciness: 4,
-          speed: 20,
-        }).start();
+    // Which card is the pointer currently over? That card's linear index is
+    // where the dragged card will be inserted on release.
+    let found: number | null = null;
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      if (!r) continue;
+      if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
+        found = i;
+        break;
       }
+    }
+    // Keep the last valid target if the pointer is momentarily in a gap.
+    if (found !== null && found !== targetRef.current) {
+      targetRef.current = found;
+      setTargetIndex(found);
     }
   };
 
-  handlers.current.onRelease = (from: number) => {
-    const to = toRef.current;
-    const snapshot = snapshotRef.current;
+  handlers.current.onRelease = () => {
+    const from = fromRef.current;
+    const to = targetRef.current;
 
-    // Snap everything back to its resting transform. The committed reorder (if
-    // any) re-renders the list in the new order, so cards land in their new
-    // slots without the transforms.
-    shifts.forEach((s) => s.setValue(0));
-    dragY.setValue(0);
-    dragScale.setValue(1);
+    drag.setValue({ x: 0, y: 0 });
+    scale.setValue(1);
     setDragIndex(null);
+    setTargetIndex(null);
     onDragActiveChange(false);
 
-    if (to !== from && snapshot.length) {
-      const reordered = [...snapshot];
+    if (to != null && to !== from && snapshotRef.current.length) {
+      const reordered = [...snapshotRef.current];
       const [moved] = reordered.splice(from, 1);
       reordered.splice(to, 0, moved);
       onCommit(reordered);
     }
   };
 
+  // Distribute LINEAR INDICES (not items) round-robin into columns so each
+  // card keeps a stable linear index for the drag math while rendering in the
+  // same masonry layout as the normal list.
+  const columns = distributeIntoColumns(
+    items.map((_, i) => i),
+    cardColumns
+  );
+
   return (
-    <View style={[styles.phaseBlockSpacing, { paddingHorizontal: horizontalPadding }]}>
+    <View style={[styles.phaseBlock, { paddingHorizontal: horizontalPadding }]}>
       <View style={styles.phaseHeaderRow}>
         <View style={[styles.phaseDot, { backgroundColor: colors.phase[phase] }]} />
         <Text style={styles.phaseLabel}>{phase}</Text>
       </View>
 
-      <View>
-        {items.map((ability, index) => {
-          const custom = customizations.get(keyForAbility(ability));
-          const isActive = dragIndex === index;
-          return (
-            <SortableRow
-              key={ability.id}
-              index={index}
-              ability={ability}
-              note={custom?.note}
-              hidden={custom?.hidden}
-              shift={shifts[index]}
-              isActive={isActive}
-              dragY={dragY}
-              dragScale={dragScale}
-              registerHeight={registerHeight}
-              handlersRef={handlers}
-            />
-          );
-        })}
+      <View style={styles.masonryGrid}>
+        {columns.map((colIndices, colIdx) => (
+          <View key={colIdx} style={styles.masonryColumn}>
+            {colIndices.map((index) => {
+              const ability = items[index];
+              const custom = customizations.get(keyForAbility(ability));
+              return (
+                <DraggableCard
+                  key={ability.id}
+                  index={index}
+                  ability={ability}
+                  note={custom?.note}
+                  hidden={custom?.hidden}
+                  isActive={dragIndex === index}
+                  isDropTarget={
+                    dragIndex !== null && targetIndex === index && dragIndex !== index
+                  }
+                  drag={drag}
+                  scale={scale}
+                  setNodeRef={(node) => {
+                    nodeRefs.current[index] = node;
+                  }}
+                  handlersRef={handlers}
+                />
+              );
+            })}
+          </View>
+        ))}
       </View>
     </View>
   );
 }
 
 // ---------------------------------------------------------------------------
-// SortableRow — a single draggable card row (drag handle + AbilityCard)
+// DraggableCard — wiggling, press-hold-draggable wrapper around AbilityCard
 // ---------------------------------------------------------------------------
 
-interface SortableRowProps {
+interface DraggableCardProps {
   index: number;
   ability: Ability;
   note?: string | null;
   hidden?: boolean;
-  shift: Animated.Value;
   isActive: boolean;
-  dragY: Animated.Value;
-  dragScale: Animated.Value;
-  registerHeight: (index: number, height: number) => void;
+  isDropTarget: boolean;
+  drag: Animated.ValueXY;
+  scale: Animated.Value;
+  setNodeRef: (node: View | null) => void;
   handlersRef: React.MutableRefObject<{
-    onGrant: (from: number) => void;
-    onMove: (from: number, dy: number) => void;
+    onGrant: (from: number, g: PanResponderGestureState) => void;
+    onMove: (from: number, g: PanResponderGestureState) => void;
     onRelease: (from: number) => void;
   }>;
 }
 
-function SortableRow({
+function DraggableCard({
   index,
   ability,
   note,
   hidden,
-  shift,
   isActive,
-  dragY,
-  dragScale,
-  registerHeight,
+  isDropTarget,
+  drag,
+  scale,
+  setNodeRef,
   handlersRef,
-}: SortableRowProps) {
-  // Keep the row's current index readable from the (once-created) PanResponder
-  // so it stays correct after a commit shuffles indices.
+}: DraggableCardProps) {
+  // Keep the current index readable from the once-created PanResponder so it
+  // stays correct after a commit shuffles indices.
   const indexRef = useRef(index);
   indexRef.current = index;
 
-  const panResponder = useRef(
+  // Press-and-hold arming: only after holding HOLD_TO_DRAG_MS does a move turn
+  // into a drag. Quick swipes fall through to the ScrollView so the list still
+  // scrolls normally.
+  const armedRef = useRef(false);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearHold() {
+    if (holdTimer.current) {
+      clearTimeout(holdTimer.current);
+      holdTimer.current = null;
+    }
+  }
+
+  const pan = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      // Once we've grabbed the handle, capture the gesture so the parent
-      // ScrollView can't steal it mid-drag on touch.
-      onMoveShouldSetPanResponderCapture: () => true,
-      onPanResponderGrant: () => handlersRef.current.onGrant(indexRef.current),
-      onPanResponderMove: (_evt, g) =>
-        handlersRef.current.onMove(indexRef.current, g.dy),
-      onPanResponderRelease: () => handlersRef.current.onRelease(indexRef.current),
-      onPanResponderTerminate: () => handlersRef.current.onRelease(indexRef.current),
+      // Don't claim on touch-down — let the press-hold timer decide.
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => {
+        armedRef.current = false;
+        clearHold();
+        holdTimer.current = setTimeout(() => {
+          armedRef.current = true;
+        }, HOLD_TO_DRAG_MS);
+        return false;
+      },
+      onMoveShouldSetPanResponder: (_e, g) =>
+        armedRef.current && (Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3),
+      onMoveShouldSetPanResponderCapture: (_e, g) =>
+        armedRef.current && (Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3),
+      onPanResponderGrant: (_e, g) => handlersRef.current.onGrant(indexRef.current, g),
+      onPanResponderMove: (_e, g) => handlersRef.current.onMove(indexRef.current, g),
+      onPanResponderRelease: () => {
+        clearHold();
+        armedRef.current = false;
+        handlersRef.current.onRelease(indexRef.current);
+      },
+      onPanResponderTerminate: () => {
+        clearHold();
+        armedRef.current = false;
+        handlersRef.current.onRelease(indexRef.current);
+      },
+      // Let the ScrollView take over (scroll) only while we're not armed.
+      onPanResponderTerminationRequest: () => !armedRef.current,
     })
   ).current;
 
-  function onLayout(e: LayoutChangeEvent) {
-    registerHeight(index, e.nativeEvent.layout.height);
-  }
-
-  // Active row follows the finger (dragY) and lifts; idle rows ride their shift.
-  const transform: any[] = isActive
-    ? [{ translateY: dragY }, { scale: dragScale }]
-    : [{ translateY: shift }];
+  const activeTransform = isActive
+    ? [{ translateX: drag.x }, { translateY: drag.y }, { scale }]
+    : [];
 
   return (
     <Animated.View
-      onLayout={onLayout}
+      ref={setNodeRef}
+      collapsable={false}
+      {...pan.panHandlers}
       style={[
-        styles.row,
-        // Web-only: stop the browser selecting card text while dragging.
-        { userSelect: 'none' } as any,
+        styles.cardOuter,
         {
-          transform,
-          zIndex: isActive ? 999 : 0,
+          transform: activeTransform,
+          zIndex: isActive ? 999 : 1,
           elevation: isActive ? 8 : 0,
           opacity: isActive ? 0.97 : 1,
         },
       ]}
     >
-      <View style={styles.handle} {...panResponder.panHandlers}>
-        <Text style={styles.handleGlyph}>⠿</Text>
-      </View>
-      <View style={styles.cardWrap}>
+      <View
+        // Wiggle on every idle card; pause it on the one being dragged.
+        dataSet={isActive ? undefined : { wiggle: String(index % 3) }}
+        style={[
+          { userSelect: 'none' } as any,
+          isDropTarget && styles.dropTarget,
+        ]}
+      >
         <AbilityCard
           ability={ability}
-          // No-op in reorder mode: tapping a card shouldn't toggle used while
-          // the user is rearranging.
+          // No-op in reorder mode — tapping shouldn't toggle used while
+          // rearranging.
           onToggleUsed={noop}
           note={note}
           hidden={hidden}
@@ -365,30 +432,16 @@ function SortableRow({
 function noop() {}
 
 /**
- * Given the dragged card's center Y (in the frozen original layout) and where
- * the drag started, find the slot index it now belongs in. Only one direction
- * loop ever advances `to`, so this resolves to a single unambiguous target.
+ * Splits an ordered list into N columns using round-robin distribution —
+ * identical to the normal AbilityList masonry so the layouts match exactly.
  */
-function computeTarget(
-  draggedCenter: number,
-  from: number,
-  tops: number[],
-  heights: number[]
-): number {
-  let to = from;
-  // Dragging down: pass any lower card whose center we've moved beyond.
-  for (let i = from + 1; i < heights.length; i++) {
-    const center = tops[i] + heights[i] / 2;
-    if (draggedCenter > center) to = i;
-    else break;
-  }
-  // Dragging up: pass any higher card whose center we've moved above.
-  for (let i = from - 1; i >= 0; i--) {
-    const center = tops[i] + heights[i] / 2;
-    if (draggedCenter < center) to = i;
-    else break;
-  }
-  return to;
+function distributeIntoColumns<T>(items: T[], columnCount: number): T[][] {
+  const safeCount = Math.max(1, columnCount);
+  const columns: T[][] = Array.from({ length: safeCount }, () => []);
+  items.forEach((item, index) => {
+    columns[index % safeCount].push(item);
+  });
+  return columns;
 }
 
 const styles = StyleSheet.create({
@@ -414,7 +467,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
   },
-  phaseBlockSpacing: {
+  phaseBlock: {
     marginTop: 16,
     width: '100%',
   },
@@ -436,28 +489,24 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  row: {
+  masonryGrid: {
     flexDirection: 'row',
-    alignItems: 'stretch',
-    marginBottom: GAP,
+    gap: GAP,
+    alignItems: 'flex-start',
   },
-  handle: {
-    width: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#22324A',
-    borderRadius: radii.md,
-    marginRight: 10,
-    // Touch/mouse affordance — the whole strip is the grab target.
-    cursor: 'grab' as any,
-  },
-  handleGlyph: {
-    color: colors.textPrimary,
-    fontSize: 20,
-    fontWeight: '700',
-  },
-  cardWrap: {
+  masonryColumn: {
     flex: 1,
     minWidth: 0,
+    gap: GAP,
+  },
+  cardOuter: {
+    width: '100%',
+  },
+  dropTarget: {
+    borderRadius: radii.lg,
+    borderWidth: 2,
+    borderColor: '#5BA9FF',
+    // Tints the slot the dragged card will drop into.
+    backgroundColor: 'rgba(91, 169, 255, 0.12)',
   },
 });
