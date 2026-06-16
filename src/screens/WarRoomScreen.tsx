@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,13 @@ import type { Ability, Phase } from '../types';
 import type { WarRoom } from '../types/warRoom';
 import { parseAbilitiesFromJSON } from '../utils/jsonParser';
 import { keyForAbility } from '../types/customization';
+import { supabase } from '../lib/supabase';
+import {
+  getRoomState,
+  setAbilityUsed,
+  stateKey,
+  type RoomStateRow,
+} from '../utils/warRoomState';
 import AbilityCard from '../components/organisms/AbilityCard';
 import { colors, radii } from '../theme/tokens';
 import { useResponsive, getContentMaxWidth } from '../utils/responsive';
@@ -37,10 +44,15 @@ interface WarRoomScreenProps {
 type Side = 'mine' | 'opponent';
 
 /**
- * WarRoomScreen — shows BOTH players' armies (grouped by phase) with a tab to
- * switch between them, so each player can see what either side can do. In this
- * phase, "used" toggling is LOCAL to your device (not synced) — Phase 3 adds
- * live sync keyed on the same `abilityKey`.
+ * WarRoomScreen — shows BOTH players' armies (grouped by phase) behind a tab,
+ * with ability "used" state synced live between the two players.
+ *
+ * Sync model: a `war_room_state` row per used ability, keyed by the army
+ * owner's id + the stable abilityKey. You only mark YOUR OWN army (RLS enforces
+ * it); the opponent's tab is read-only and reflects their marks in real time.
+ * A single Realtime channel carries postgres_changes (the state) + presence
+ * (the "opponent online" dot). The DB is the source of truth — on (re)subscribe
+ * we refetch the full state to catch anything missed while disconnected.
  */
 export default function WarRoomScreen({
   room,
@@ -52,8 +64,9 @@ export default function WarRoomScreen({
   const contentMaxWidth = Math.min(getContentMaxWidth(width), 720);
   const padding = select({ mobile: 16, default: 24 });
 
-  // Which army is "mine"? Fall back to player1 if id matching is inconclusive.
   const iAmPlayer1 = room.player1Id === userId;
+  const myId = userId;
+  const oppId = iAmPlayer1 ? room.player2Id : room.player1Id;
   const myJson = iAmPlayer1 ? room.player1ArmyJson : room.player2ArmyJson;
   const oppJson = iAmPlayer1 ? room.player2ArmyJson : room.player1ArmyJson;
 
@@ -66,25 +79,101 @@ export default function WarRoomScreen({
     [oppJson]
   );
 
-  // Local used-state per side, keyed by stable abilityKey (sync-ready for P3).
-  const [usedMine, setUsedMine] = useState<Set<string>>(new Set());
-  const [usedOpp, setUsedOpp] = useState<Set<string>>(new Set());
+  // Synced used-state, keyed by `${ownerId}::${abilityKey}`.
+  const [usedMap, setUsedMap] = useState<Map<string, boolean>>(new Map());
+  const [opponentOnline, setOpponentOnline] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const [side, setSide] = useState<Side>('mine');
-  const abilities = side === 'mine' ? myAbilities : oppAbilities;
-  const usedSet = side === 'mine' ? usedMine : usedOpp;
-  const setUsedSet = side === 'mine' ? setUsedMine : setUsedOpp;
 
-  function toggleUsed(key: string) {
-    setUsedSet((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
+  // ---- Realtime: state sync + presence ----
+  useEffect(() => {
+    let cancelled = false;
+
+    function applyRows(rows: RoomStateRow[]) {
+      const next = new Map<string, boolean>();
+      for (const r of rows) next.set(stateKey(r.owner_id, r.ability_key), r.used);
+      if (!cancelled) setUsedMap(next);
+    }
+
+    // Initial load (also re-run on SUBSCRIBED below to catch missed events).
+    getRoomState(room.id).then(applyRows);
+
+    const channel = supabase
+      .channel(`room:${room.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'war_room_state',
+          filter: `room_id=eq.${room.id}`,
+        },
+        (payload) => {
+          if (payload.eventType === 'DELETE') {
+            const old = payload.old as any;
+            if (old?.owner_id && old?.ability_key) {
+              setUsedMap((m) => {
+                const n = new Map(m);
+                n.delete(stateKey(old.owner_id, old.ability_key));
+                return n;
+              });
+            }
+            return;
+          }
+          const row = payload.new as any;
+          setUsedMap((m) => {
+            const n = new Map(m);
+            n.set(stateKey(row.owner_id, row.ability_key), row.used);
+            return n;
+          });
+        }
+      )
+      .on('presence', { event: 'sync' }, () => {
+        const presences = Object.values(channel.presenceState()).flat() as any[];
+        setOpponentOnline(presences.some((p) => p.user_id === oppId));
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          // Refetch the authoritative full state, then announce our presence.
+          const rows = await getRoomState(room.id);
+          applyRows(rows);
+          await channel.track({ user_id: myId });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [room.id, myId, oppId]);
+
+  // Toggle one of MY abilities: optimistic local update + upsert; revert on error.
+  async function toggleMine(key: string) {
+    const cur = usedMap.get(stateKey(myId, key)) ?? false;
+    const nextUsed = !cur;
+    setUsedMap((m) => {
+      const n = new Map(m);
+      n.set(stateKey(myId, key), nextUsed);
+      return n;
     });
+    setSyncError(null);
+    try {
+      await setAbilityUsed(room.id, key, nextUsed);
+    } catch (err) {
+      // Revert the optimistic change.
+      setUsedMap((m) => {
+        const n = new Map(m);
+        n.set(stateKey(myId, key), cur);
+        return n;
+      });
+      setSyncError(err instanceof Error ? err.message : 'Could not sync that change.');
+    }
   }
 
-  // Group the active side's abilities by phase (drop empty phases).
+  const abilities = side === 'mine' ? myAbilities : oppAbilities;
+  const ownerId = side === 'mine' ? myId : oppId;
+
   const sections = useMemo(
     () =>
       PHASES.map((phase) => ({
@@ -103,7 +192,7 @@ export default function WarRoomScreen({
         </TouchableOpacity>
       </View>
 
-      {/* Side tabs */}
+      {/* Side tabs + presence */}
       <View style={[styles.tabsWrap, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
         <View style={styles.tabs}>
           <TouchableOpacity
@@ -120,11 +209,22 @@ export default function WarRoomScreen({
             onPress={() => setSide('opponent')}
             activeOpacity={0.7}
           >
-            <Text style={[styles.tabText, side === 'opponent' && styles.tabTextActive]}>
-              {opponentLabel ? `@${opponentLabel}` : 'Opponent'}
-            </Text>
+            <View style={styles.tabLabelRow}>
+              <View
+                style={[styles.dot, { backgroundColor: opponentOnline ? '#4ADE80' : '#5A6B85' }]}
+              />
+              <Text style={[styles.tabText, side === 'opponent' && styles.tabTextActive]}>
+                {opponentLabel ? `@${opponentLabel}` : 'Opponent'}
+              </Text>
+            </View>
           </TouchableOpacity>
         </View>
+        {side === 'opponent' ? (
+          <Text style={styles.readonlyNote}>
+            {opponentOnline ? 'Online — ' : 'Offline — '}their marks update live. View only.
+          </Text>
+        ) : null}
+        {syncError ? <Text style={styles.errorText}>{syncError}</Text> : null}
       </View>
 
       <ScrollView
@@ -136,7 +236,7 @@ export default function WarRoomScreen({
         {abilities.length === 0 ? (
           <Text style={styles.empty}>
             {side === 'opponent'
-              ? "Your opponent hasn't joined yet, or their army has no abilities."
+              ? "Your opponent's army has no abilities to show."
               : 'No abilities found in this army.'}
           </Text>
         ) : (
@@ -145,10 +245,15 @@ export default function WarRoomScreen({
               <Text style={styles.phaseLabel}>{section.phase}</Text>
               {section.items.map((ability, i) => {
                 const key = keyForAbility(ability);
-                const display: Ability = { ...ability, used: usedSet.has(key) };
+                const used = ownerId ? usedMap.get(stateKey(ownerId, key)) ?? false : false;
+                const display: Ability = { ...ability, used };
                 return (
                   <View key={`${ability.id}-${i}`} style={styles.cardWrap}>
-                    <AbilityCard ability={display} onToggleUsed={() => toggleUsed(key)} />
+                    <AbilityCard
+                      ability={display}
+                      // Own army: interactive + synced. Opponent: read-only.
+                      onToggleUsed={side === 'mine' ? () => toggleMine(key) : noop}
+                    />
                   </View>
                 );
               })}
@@ -159,6 +264,8 @@ export default function WarRoomScreen({
     </View>
   );
 }
+
+function noop() {}
 
 const styles = StyleSheet.create({
   root: {
@@ -210,6 +317,16 @@ const styles = StyleSheet.create({
   tabActive: {
     backgroundColor: '#22324A',
   },
+  tabLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
   tabText: {
     color: colors.textSecondary,
     fontSize: 14,
@@ -217,6 +334,18 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: colors.textPrimary,
+  },
+  readonlyNote: {
+    color: colors.textDim,
+    fontSize: 11,
+    marginTop: 6,
+    textAlign: 'center',
+  },
+  errorText: {
+    color: '#FF8B8B',
+    fontSize: 12,
+    marginTop: 6,
+    textAlign: 'center',
   },
   content: {
     width: '100%',
