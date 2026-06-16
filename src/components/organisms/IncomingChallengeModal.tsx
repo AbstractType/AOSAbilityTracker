@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Modal,
   View,
@@ -13,6 +13,14 @@ import { colors, radii } from '../../theme/tokens';
 import { useResponsive } from '../../utils/responsive';
 import type { Challenge } from '../../types/warRoom';
 import type { SavedArmy } from '../../types/army';
+
+/** Format a millisecond remaining-time as m:ss (clamped at 0:00). */
+function formatRemaining(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
 
 interface IncomingChallengeModalProps {
   visible: boolean;
@@ -43,6 +51,9 @@ export default function IncomingChallengeModal({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState<'accept' | 'decline' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(Date.now());
+  // Ensures the auto-decline-on-timeout fires at most once per challenge.
+  const autoDeclinedRef = useRef(false);
 
   useEffect(() => {
     if (visible) {
@@ -52,11 +63,33 @@ export default function IncomingChallengeModal({
     }
   }, [visible, challenge?.id]);
 
+  // Countdown clock + auto-decline when the response timer runs out.
+  useEffect(() => {
+    if (!visible || !challenge) return;
+    autoDeclinedRef.current = false;
+    const tick = () => {
+      setNowMs(Date.now());
+      if (challenge.expiresAt - Date.now() <= 0 && !autoDeclinedRef.current) {
+        autoDeclinedRef.current = true;
+        // Best-effort decline, then close regardless.
+        Promise.resolve(onDecline(challenge)).catch(() => {}).finally(() => onClose());
+      }
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, challenge?.id]);
+
   const { select, scaleFont } = useResponsive();
   const modalMaxWidth = select({ mobile: 420, tablet: 460, default: 500 });
   const titleFontSize = scaleFont(select({ mobile: 18, default: 20 }));
 
   if (!challenge) return null;
+
+  const remainingMs = challenge.expiresAt - nowMs;
+  const remainingLabel = formatRemaining(remainingMs);
+  const lowTime = remainingMs <= 30000;
 
   const selectedArmy = savedArmies.find((a) => a.id === selectedId) ?? null;
 
@@ -116,9 +149,14 @@ export default function IncomingChallengeModal({
           </View>
 
           <View style={styles.body}>
-            <Text style={styles.blurb}>
-              Pick the army you'll bring to the war room, then accept.
-            </Text>
+            <View style={styles.timerRow}>
+              <Text style={styles.blurb}>
+                Pick the army you'll bring to the war room, then accept.
+              </Text>
+              <Text style={[styles.timer, lowTime && styles.timerLow]}>
+                {remainingLabel}
+              </Text>
+            </View>
 
             <SavedArmyPicker
               armies={savedArmies}
@@ -208,11 +246,27 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   body: { padding: 20 },
+  timerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 14,
+  },
   blurb: {
+    flex: 1,
+    minWidth: 0,
     color: colors.textSecondary,
     fontSize: 13,
     lineHeight: 18,
-    marginBottom: 14,
+  },
+  timer: {
+    color: colors.textSecondary,
+    fontSize: 16,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  timerLow: {
+    color: '#FF8B8B',
   },
   errorText: {
     color: '#FF8B8B',

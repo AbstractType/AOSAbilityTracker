@@ -71,18 +71,32 @@ export default function WarRoomLobbyScreen({
   const [linkError, setLinkError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Outgoing challenges
-  const [outgoing, setOutgoing] = useState<Challenge[]>([]);
+  // Outgoing challenges (raw 'pending' rows from the server) + a 1s clock so
+  // countdowns tick and a challenge drops out of "active" the moment it lapses.
+  const [outgoingRaw, setOutgoingRaw] = useState<Challenge[]>([]);
+  const [nowMs, setNowMs] = useState(Date.now());
 
   async function refreshOutgoing() {
     const all = await getMyChallenges();
-    setOutgoing(
-      all.filter((c) => c.challengerId === userId && c.status === 'pending')
-    );
+    setOutgoingRaw(all.filter((c) => c.challengerId === userId && c.status === 'pending'));
   }
+
+  // A challenge is only "active" while pending AND not past its expiry. Derived
+  // from nowMs so the gate releases instantly when the timer runs out.
+  const activeOutgoing = outgoingRaw.filter((c) => c.expiresAt > nowMs);
+  const pending = activeOutgoing[0] ?? null;
+  const hasPending = !!pending;
 
   useEffect(() => {
     refreshOutgoing();
+    // 1s clock for the countdown + lapse detection.
+    const clock = setInterval(() => setNowMs(Date.now()), 1000);
+    // Poll so an opponent's accept/decline (and server-side expiry) reflect here.
+    const poll = setInterval(refreshOutgoing, 3000);
+    return () => {
+      clearInterval(clock);
+      clearInterval(poll);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -106,7 +120,7 @@ export default function WarRoomLobbyScreen({
   }
 
   const selectedArmy = savedArmies.find((a) => a.id === selectedArmyId) ?? null;
-  const canSend = !!opponent && !!selectedArmy && !sending;
+  const canSend = !!opponent && !!selectedArmy && !sending && !hasPending;
 
   async function handleSend() {
     if (!opponent || !selectedArmy) return;
@@ -194,6 +208,29 @@ export default function WarRoomLobbyScreen({
           Challenge another player to compare armies in a shared room.
         </Text>
 
+        {/* Active pending challenge — you can only have one at a time. */}
+        {pending ? (
+          <View style={styles.pendingBanner}>
+            <View style={styles.pendingTextWrap}>
+              <Text style={styles.pendingTitle}>Challenge pending</Text>
+              <Text style={styles.pendingMeta}>
+                {pending.opponentId
+                  ? 'Waiting for a reply'
+                  : 'Invite link active — waiting for someone to join'}
+                {' · '}
+                {formatRemaining(pending.expiresAt - nowMs)} left
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.pendingCancelBtn}
+              onPress={() => handleCancel(pending)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.pendingCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         {/* Find opponent */}
         <Text style={styles.sectionTitle}>1 · Find an opponent</Text>
         <View style={styles.searchRow}>
@@ -266,6 +303,11 @@ export default function WarRoomLobbyScreen({
             disabled={!canSend}
           />
         </View>
+        {hasPending ? (
+          <Text style={styles.gateHint}>
+            You have a pending challenge — cancel it above to send another.
+          </Text>
+        ) : null}
 
         {/* Or share a link (no specific opponent needed) */}
         <View style={styles.orDivider}>
@@ -293,30 +335,21 @@ export default function WarRoomLobbyScreen({
               label={creatingLink ? 'Creating…' : 'Create invite link'}
               onPress={handleCreateLink}
               variant="secondary"
-              disabled={!selectedArmy || creatingLink}
+              disabled={!selectedArmy || creatingLink || hasPending}
             />
           </View>
         )}
-
-        {/* Outgoing */}
-        {outgoing.length > 0 ? (
-          <>
-            <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Pending challenges</Text>
-            {outgoing.map((c) => (
-              <View key={c.id} style={styles.outgoingRow}>
-                <Text style={styles.outgoingText} numberOfLines={1}>
-                  Waiting for a reply…
-                </Text>
-                <TouchableOpacity onPress={() => handleCancel(c)}>
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </>
-        ) : null}
       </ScrollView>
     </View>
   );
+}
+
+/** Format a millisecond remaining-time as m:ss (clamped at 0:00). */
+function formatRemaining(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 const styles = StyleSheet.create({
@@ -491,27 +524,47 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  outgoingRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#101725',
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: '#22324A',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    marginBottom: 8,
+  gateHint: {
+    color: colors.textDim,
+    fontSize: 12,
+    fontStyle: 'italic',
+    marginTop: 8,
   },
-  outgoingText: {
-    color: colors.textSecondary,
-    fontSize: 13,
+  pendingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#1F2A4A',
+    borderColor: '#3D4F7F',
+    borderWidth: 1,
+    borderRadius: radii.md,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 20,
+  },
+  pendingTextWrap: {
     flex: 1,
     minWidth: 0,
   },
-  cancelText: {
-    color: '#FF8B8B',
+  pendingTitle: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  pendingMeta: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  pendingCancelBtn: {
+    backgroundColor: '#6F384F',
+    borderRadius: radii.md,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  pendingCancelText: {
+    color: colors.textPrimary,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
   },
 });

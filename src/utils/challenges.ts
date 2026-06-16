@@ -39,6 +39,16 @@ export function rowToChallenge(row: ChallengeRow): Challenge {
   };
 }
 
+// Response windows. Targeted challenges are "respond now" (short); shared
+// links are async by nature so they live longer. Tweak freely.
+const TARGETED_CHALLENGE_MS = 2 * 60 * 1000; // 2 minutes
+const LINK_CHALLENGE_MS = 60 * 60 * 1000; // 1 hour
+
+/** A challenge is "active" only while pending AND not past its expiry. */
+export function isActiveChallenge(c: Challenge): boolean {
+  return c.status === 'pending' && c.expiresAt > Date.now();
+}
+
 async function currentUserId(): Promise<string | null> {
   const { data } = await supabase.auth.getSession();
   return data.session?.user?.id ?? null;
@@ -63,11 +73,15 @@ export async function createChallenge(params: {
       challenger_username: params.challengerUsername,
       opponent_id: params.opponentId,
       challenger_army_json: params.armyJson,
+      expires_at: new Date(Date.now() + TARGETED_CHALLENGE_MS).toISOString(),
     })
     .select()
     .single();
 
   if (error) {
+    if (error.code === '23505') {
+      throw new Error('You already have a pending challenge. Cancel it before sending another.');
+    }
     throw new Error(error.message || 'Could not send the challenge. Try again.');
   }
   return rowToChallenge(data as ChallengeRow);
@@ -91,12 +105,16 @@ export async function createLinkChallenge(params: {
       challenger_id: userId,
       challenger_username: params.challengerUsername,
       challenger_army_json: params.armyJson,
+      expires_at: new Date(Date.now() + LINK_CHALLENGE_MS).toISOString(),
       // opponent_id intentionally null → open link
     })
     .select()
     .single();
 
   if (error) {
+    if (error.code === '23505') {
+      throw new Error('You already have a pending challenge. Cancel it before creating a link.');
+    }
     throw new Error(error.message || 'Could not create the invite link. Try again.');
   }
   return rowToChallenge(data as ChallengeRow);
