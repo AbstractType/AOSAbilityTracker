@@ -18,6 +18,7 @@ import {
   type RoomStateRow,
 } from '../utils/warRoomState';
 import AbilityCard from '../components/organisms/AbilityCard';
+import PhaseSelector from '../components/organisms/PhaseSelector';
 import { colors, radii } from '../theme/tokens';
 import { useResponsive, getContentMaxWidth } from '../utils/responsive';
 
@@ -32,27 +33,64 @@ const PHASES: Phase[] = [
   'End of Turn',
 ];
 
+// Two armies side-by-side need room to stay readable; below this we fall back
+// to the You/Opponent tab.
+const SIDE_BY_SIDE_MIN = 900;
+
 interface WarRoomScreenProps {
   room: WarRoom;
-  /** Current user id, to work out which side is "yours". */
   userId: string;
-  /** Opponent's handle for the tab label, if known. */
   opponentLabel?: string;
   onLeave: () => void;
 }
 
 type Side = 'mine' | 'opponent';
+type TurnRole = 'active' | 'inactive';
+type TurnScope = 'active' | 'inactive' | 'any';
 
 /**
- * WarRoomScreen — shows BOTH players' armies (grouped by phase) behind a tab,
- * with ability "used" state synced live between the two players.
- *
- * Sync model: a `war_room_state` row per used ability, keyed by the army
- * owner's id + the stable abilityKey. You only mark YOUR OWN army (RLS enforces
- * it); the opponent's tab is read-only and reflects their marks in real time.
- * A single Realtime channel carries postgres_changes (the state) + presence
- * (the "opponent online" dot). The DB is the source of truth — on (re)subscribe
- * we refetch the full state to catch anything missed while disconnected.
+ * Classify an ability by WHOSE TURN it can be used on, from its timing text:
+ *  - "Your …"            → active  (only on your own turn)
+ *  - "Enemy …" / "Reaction:" → inactive (on the opponent's turn / reacting)
+ *  - "Any …", passives, generic phase timings (Start/End of Turn, Deployment)
+ *    or no timing → any (relevant regardless of whose turn)
+ */
+function classifyTiming(ability: Ability): TurnScope {
+  const t = (ability.timing ?? '').toLowerCase();
+  if (t.includes('your')) return 'active';
+  if (t.includes('enemy') || t.includes('reaction')) return 'inactive';
+  return 'any';
+}
+
+/**
+ * Abilities a player in the given turn role should see: those matching their
+ * role plus the always-relevant ('any') ones, optionally narrowed to a phase.
+ */
+function abilitiesForRole(
+  abilities: Ability[],
+  role: TurnRole,
+  phaseFilter: Phase | null
+): Ability[] {
+  return abilities.filter((a) => {
+    if (phaseFilter && a.phase !== phaseFilter) return false;
+    const scope = classifyTiming(a);
+    return scope === 'any' || scope === role;
+  });
+}
+
+function groupByPhase(abilities: Ability[]) {
+  return PHASES.map((phase) => ({
+    phase,
+    items: abilities.filter((a) => a.phase === phase),
+  })).filter((s) => s.items.length > 0);
+}
+
+/**
+ * WarRoomScreen — phase-selector at the top (like the tracker); both armies
+ * shown side-by-side on wide screens, or behind a You/Opponent tab on narrow
+ * ones. A local "whose turn" toggle filters each army to the abilities usable
+ * in that role (active = your-turn abilities, inactive = reactions/enemy-turn),
+ * while "used" state stays synced live between players (Phase 3).
  */
 export default function WarRoomScreen({
   room,
@@ -61,8 +99,9 @@ export default function WarRoomScreen({
   onLeave,
 }: WarRoomScreenProps) {
   const { width, select } = useResponsive();
-  const contentMaxWidth = Math.min(getContentMaxWidth(width), 720);
-  const padding = select({ mobile: 16, default: 24 });
+  const contentMaxWidth = Math.min(getContentMaxWidth(width), 1200);
+  const padding = select({ mobile: 12, default: 24 });
+  const sideBySide = width >= SIDE_BY_SIDE_MIN;
 
   const iAmPlayer1 = room.player1Id === userId;
   const myId = userId;
@@ -84,9 +123,15 @@ export default function WarRoomScreen({
   const [opponentOnline, setOpponentOnline] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
 
-  const [side, setSide] = useState<Side>('mine');
+  // Local view controls.
+  const [side, setSide] = useState<Side>('mine'); // narrow-screen tab
+  const [selectedPhase, setSelectedPhase] = useState<Phase | null>(null);
+  const [myTurn, setMyTurn] = useState(true); // local: is it my turn?
 
-  // ---- Realtime: state sync + presence ----
+  const myRole: TurnRole = myTurn ? 'active' : 'inactive';
+  const oppRole: TurnRole = myTurn ? 'inactive' : 'active';
+
+  // ---- Realtime: state sync + presence (unchanged from Phase 3) ----
   useEffect(() => {
     let cancelled = false;
 
@@ -96,7 +141,6 @@ export default function WarRoomScreen({
       if (!cancelled) setUsedMap(next);
     }
 
-    // Initial load (also re-run on SUBSCRIBED below to catch missed events).
     getRoomState(room.id).then(applyRows);
 
     const channel = supabase
@@ -135,7 +179,6 @@ export default function WarRoomScreen({
       })
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
-          // Refetch the authoritative full state, then announce our presence.
           const rows = await getRoomState(room.id);
           applyRows(rows);
           await channel.track({ user_id: myId });
@@ -148,7 +191,6 @@ export default function WarRoomScreen({
     };
   }, [room.id, myId, oppId]);
 
-  // Toggle one of MY abilities: optimistic local update + upsert; revert on error.
   async function toggleMine(key: string) {
     const cur = usedMap.get(stateKey(myId, key)) ?? false;
     const nextUsed = !cur;
@@ -161,7 +203,6 @@ export default function WarRoomScreen({
     try {
       await setAbilityUsed(room.id, key, nextUsed);
     } catch (err) {
-      // Revert the optimistic change.
       setUsedMap((m) => {
         const n = new Map(m);
         n.set(stateKey(myId, key), cur);
@@ -171,73 +212,49 @@ export default function WarRoomScreen({
     }
   }
 
-  const abilities = side === 'mine' ? myAbilities : oppAbilities;
-  const ownerId = side === 'mine' ? myId : oppId;
-
-  const sections = useMemo(
-    () =>
-      PHASES.map((phase) => ({
-        phase,
-        items: abilities.filter((a) => a.phase === phase),
-      })).filter((s) => s.items.length > 0),
-    [abilities]
+  // Role-filtered, phase-filtered ability lists per column.
+  const myColumn = useMemo(
+    () => abilitiesForRole(myAbilities, myRole, selectedPhase),
+    [myAbilities, myRole, selectedPhase]
+  );
+  const oppColumn = useMemo(
+    () => abilitiesForRole(oppAbilities, oppRole, selectedPhase),
+    [oppAbilities, oppRole, selectedPhase]
   );
 
-  return (
-    <View style={styles.root}>
-      <View style={[styles.bar, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
-        <Text style={styles.heading}>War Room</Text>
-        <TouchableOpacity onPress={onLeave} style={styles.leaveBtn} accessibilityLabel="Leave war room">
-          <Text style={styles.leaveText}>Leave</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Side tabs + presence */}
-      <View style={[styles.tabsWrap, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
-        <View style={styles.tabs}>
-          <TouchableOpacity
-            style={[styles.tab, side === 'mine' && styles.tabActive]}
-            onPress={() => setSide('mine')}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.tabText, side === 'mine' && styles.tabTextActive]}>
-              Your army
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tab, side === 'opponent' && styles.tabActive]}
-            onPress={() => setSide('opponent')}
-            activeOpacity={0.7}
-          >
-            <View style={styles.tabLabelRow}>
+  function renderColumn(
+    columnAbilities: Ability[],
+    ownerId: string | null,
+    role: TurnRole,
+    interactive: boolean,
+    headerTitle: string,
+    showOnlineDot: boolean
+  ) {
+    const sections = groupByPhase(columnAbilities);
+    return (
+      <View style={styles.column}>
+        <View style={styles.columnHeader}>
+          <View style={styles.columnTitleRow}>
+            {showOnlineDot ? (
               <View
                 style={[styles.dot, { backgroundColor: opponentOnline ? '#4ADE80' : '#5A6B85' }]}
               />
-              <Text style={[styles.tabText, side === 'opponent' && styles.tabTextActive]}>
-                {opponentLabel ? `@${opponentLabel}` : 'Opponent'}
-              </Text>
-            </View>
-          </TouchableOpacity>
+            ) : null}
+            <Text style={styles.columnTitle} numberOfLines={1}>
+              {headerTitle}
+            </Text>
+          </View>
+          <View style={[styles.roleBadge, role === 'active' ? styles.roleActive : styles.roleInactive]}>
+            <Text style={styles.roleBadgeText}>
+              {role === 'active' ? 'Active turn' : 'Reacting'}
+            </Text>
+          </View>
         </View>
-        {side === 'opponent' ? (
-          <Text style={styles.readonlyNote}>
-            {opponentOnline ? 'Online — ' : 'Offline — '}their marks update live. View only.
-          </Text>
-        ) : null}
-        {syncError ? <Text style={styles.errorText}>{syncError}</Text> : null}
-      </View>
 
-      <ScrollView
-        contentContainerStyle={[
-          styles.content,
-          { maxWidth: contentMaxWidth, paddingHorizontal: padding },
-        ]}
-      >
-        {abilities.length === 0 ? (
+        {sections.length === 0 ? (
           <Text style={styles.empty}>
-            {side === 'opponent'
-              ? "Your opponent's army has no abilities to show."
-              : 'No abilities found in this army.'}
+            Nothing usable {role === 'active' ? 'this turn' : 'on the opponent’s turn'}
+            {selectedPhase ? ' in this phase' : ''}.
           </Text>
         ) : (
           sections.map((section) => (
@@ -251,14 +268,105 @@ export default function WarRoomScreen({
                   <View key={`${ability.id}-${i}`} style={styles.cardWrap}>
                     <AbilityCard
                       ability={display}
-                      // Own army: interactive + synced. Opponent: read-only.
-                      onToggleUsed={side === 'mine' ? () => toggleMine(key) : noop}
+                      onToggleUsed={interactive ? () => toggleMine(key) : noop}
                     />
                   </View>
                 );
               })}
             </View>
           ))
+        )}
+      </View>
+    );
+  }
+
+  const oppTitle = opponentLabel ? `@${opponentLabel}` : 'Opponent';
+
+  return (
+    <View style={styles.root}>
+      {/* Top bar */}
+      <View style={[styles.bar, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
+        <Text style={styles.heading}>War Room</Text>
+        <TouchableOpacity onPress={onLeave} style={styles.leaveBtn} accessibilityLabel="Leave war room">
+          <Text style={styles.leaveText}>Leave</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Controls: whose turn + phase selector */}
+      <View style={[styles.controls, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
+        <View style={styles.turnRow}>
+          <Text style={styles.turnLabel}>Whose turn:</Text>
+          <View style={styles.turnToggle}>
+            <TouchableOpacity
+              style={[styles.turnBtn, myTurn && styles.turnBtnActive]}
+              onPress={() => setMyTurn(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.turnBtnText, myTurn && styles.turnBtnTextActive]}>Yours</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.turnBtn, !myTurn && styles.turnBtnActive]}
+              onPress={() => setMyTurn(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.turnBtnText, !myTurn && styles.turnBtnTextActive]}>
+                {oppTitle}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <PhaseSelector
+          phases={PHASES}
+          activePhase={selectedPhase}
+          isPhaseSelectable={() => true}
+          onPhasePress={(phase) =>
+            setSelectedPhase((p) => (p === phase ? null : phase))
+          }
+        />
+
+        {syncError ? <Text style={styles.errorText}>{syncError}</Text> : null}
+      </View>
+
+      {/* Narrow: You/Opponent tab. Wide: both columns side-by-side. */}
+      {!sideBySide ? (
+        <View style={[styles.tabsWrap, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
+          <View style={styles.tabs}>
+            <TouchableOpacity
+              style={[styles.tab, side === 'mine' && styles.tabActive]}
+              onPress={() => setSide('mine')}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.tabText, side === 'mine' && styles.tabTextActive]}>You</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, side === 'opponent' && styles.tabActive]}
+              onPress={() => setSide('opponent')}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.tabText, side === 'opponent' && styles.tabTextActive]}>
+                {oppTitle}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
+
+      <ScrollView
+        contentContainerStyle={[
+          styles.content,
+          { maxWidth: contentMaxWidth, paddingHorizontal: padding },
+        ]}
+      >
+        {sideBySide ? (
+          <View style={styles.columnsRow}>
+            {renderColumn(myColumn, myId, myRole, true, 'You', false)}
+            {renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true)}
+          </View>
+        ) : side === 'mine' ? (
+          renderColumn(myColumn, myId, myRole, true, 'You', false)
+        ) : (
+          renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true)
         )}
       </ScrollView>
     </View>
@@ -297,6 +405,45 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  controls: {
+    width: '100%',
+    alignSelf: 'center',
+    paddingBottom: 8,
+  },
+  turnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 4,
+  },
+  turnLabel: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  turnToggle: {
+    flexDirection: 'row',
+    backgroundColor: '#101725',
+    borderRadius: radii.md,
+    padding: 3,
+    flexShrink: 1,
+  },
+  turnBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: radii.sm,
+  },
+  turnBtnActive: {
+    backgroundColor: '#3F66D6',
+  },
+  turnBtnText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  turnBtnTextActive: {
+    color: colors.textPrimary,
+  },
   tabsWrap: {
     width: '100%',
     alignSelf: 'center',
@@ -317,16 +464,6 @@ const styles = StyleSheet.create({
   tabActive: {
     backgroundColor: '#22324A',
   },
-  tabLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
   tabText: {
     color: colors.textSecondary,
     fontSize: 14,
@@ -335,25 +472,68 @@ const styles = StyleSheet.create({
   tabTextActive: {
     color: colors.textPrimary,
   },
-  readonlyNote: {
-    color: colors.textDim,
-    fontSize: 11,
-    marginTop: 6,
-    textAlign: 'center',
-  },
-  errorText: {
-    color: '#FF8B8B',
-    fontSize: 12,
-    marginTop: 6,
-    textAlign: 'center',
-  },
   content: {
     width: '100%',
     alignSelf: 'center',
     paddingBottom: 48,
+    paddingTop: 8,
+  },
+  columnsRow: {
+    flexDirection: 'row',
+    gap: 20,
+    alignItems: 'flex-start',
+  },
+  column: {
+    flex: 1,
+    minWidth: 0,
+  },
+  columnHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#22324A',
+  },
+  columnTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  columnTitle: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  roleBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radii.sm,
+  },
+  roleActive: {
+    backgroundColor: 'rgba(74, 222, 128, 0.18)',
+  },
+  roleInactive: {
+    backgroundColor: 'rgba(123, 143, 175, 0.18)',
+  },
+  roleBadgeText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   section: {
-    marginTop: 16,
+    marginTop: 14,
   },
   phaseLabel: {
     color: colors.textSecondary,
@@ -368,9 +548,13 @@ const styles = StyleSheet.create({
   },
   empty: {
     color: colors.textDim,
-    fontSize: 14,
+    fontSize: 13,
     fontStyle: 'italic',
-    textAlign: 'center',
-    marginTop: 40,
+    marginTop: 24,
+  },
+  errorText: {
+    color: '#FF8B8B',
+    fontSize: 12,
+    marginTop: 6,
   },
 });
