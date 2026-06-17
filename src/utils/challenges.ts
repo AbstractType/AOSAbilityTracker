@@ -88,6 +88,41 @@ export async function createChallenge(params: {
 }
 
 /**
+ * Create an email-targeted challenge: stores the opponent's email so the
+ * Database Webhook + Edge Function email them the join link. Counts as the
+ * one pending challenge; async (1h) expiry like a shared link. The recipient
+ * still joins via the link (claim_invite), not by reading the challenge.
+ */
+export async function createEmailChallenge(params: {
+  challengerUsername: string;
+  opponentEmail: string;
+  armyJson: string;
+}): Promise<Challenge> {
+  const userId = await currentUserId();
+  if (!userId) throw new Error('You need to be signed in to send an invite.');
+
+  const { data, error } = await supabase
+    .from('challenges')
+    .insert({
+      challenger_id: userId,
+      challenger_username: params.challengerUsername,
+      opponent_email: params.opponentEmail.trim().toLowerCase(),
+      challenger_army_json: params.armyJson,
+      expires_at: new Date(Date.now() + LINK_CHALLENGE_MS).toISOString(),
+    })
+    .select()
+    .single();
+
+  if (error) {
+    if (error.code === '23505') {
+      throw new Error('You already have a pending challenge. Cancel it before sending another.');
+    }
+    throw new Error(error.message || 'Could not send the email invite. Try again.');
+  }
+  return rowToChallenge(data as ChallengeRow);
+}
+
+/**
  * Create an OPEN challenge (no specific opponent) for sharing as a link.
  * Anyone who opens the link can claim it with their own army. Returns the
  * challenge so the caller can read its invite_token to build the URL.

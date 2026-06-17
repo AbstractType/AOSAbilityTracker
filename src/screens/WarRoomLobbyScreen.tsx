@@ -15,6 +15,7 @@ import { searchUsers } from '../utils/profiles';
 import {
   createChallenge,
   createLinkChallenge,
+  createEmailChallenge,
   buildInviteUrl,
   getMyChallenges,
   cancelChallenge,
@@ -70,6 +71,12 @@ export default function WarRoomLobbyScreen({
   const [linkUrl, setLinkUrl] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Email invite
+  const [emailInput, setEmailInput] = useState('');
+  const [sendingEmail, setSendingEmail] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailNotice, setEmailNotice] = useState<string | null>(null);
 
   // Outgoing challenges (raw 'pending' rows from the server) + a 1s clock so
   // countdowns tick and a challenge drops out of "active" the moment it lapses.
@@ -173,6 +180,32 @@ export default function WarRoomLobbyScreen({
       setLinkError(err instanceof Error ? err.message : 'Could not create the invite link.');
     } finally {
       setCreatingLink(false);
+    }
+  }
+
+  async function handleEmailInvite() {
+    const email = emailInput.trim().toLowerCase();
+    if (!selectedArmy) return;
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      setEmailError('That email address looks invalid.');
+      return;
+    }
+    setSendingEmail(true);
+    setEmailError(null);
+    setEmailNotice(null);
+    try {
+      await createEmailChallenge({
+        challengerUsername: profile.username,
+        opponentEmail: email,
+        armyJson: selectedArmy.json,
+      });
+      setEmailNotice(`Invite emailed to ${email}.`);
+      setEmailInput('');
+      refreshOutgoing();
+    } catch (err) {
+      setEmailError(err instanceof Error ? err.message : 'Could not send the email invite.');
+    } finally {
+      setSendingEmail(false);
     }
   }
 
@@ -339,6 +372,44 @@ export default function WarRoomLobbyScreen({
             />
           </View>
         )}
+
+        {/* Or invite by email */}
+        <View style={styles.orDivider}>
+          <View style={styles.orLine} />
+          <Text style={styles.orText}>or invite by email</Text>
+          <View style={styles.orLine} />
+        </View>
+        <Text style={styles.linkBlurb}>
+          We'll email them the join link. They sign in, pick an army, and join.
+        </Text>
+        <View style={styles.searchRow}>
+          <TextInput
+            style={[styles.input, { paddingHorizontal: 12 }]}
+            value={emailInput}
+            onChangeText={(t) => {
+              setEmailInput(t);
+              setEmailError(null);
+              setEmailNotice(null);
+            }}
+            placeholder="opponent@example.com"
+            placeholderTextColor="#7A8BA4"
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!sendingEmail && !hasPending}
+            selectionColor={CARET_COLOR}
+          />
+        </View>
+        {emailError ? <Text style={styles.errorText}>{emailError}</Text> : null}
+        {emailNotice ? <Text style={styles.infoText}>{emailNotice}</Text> : null}
+        <View style={styles.sendRow}>
+          <Button
+            label={sendingEmail ? 'Sending…' : 'Send email invite'}
+            onPress={handleEmailInvite}
+            variant="secondary"
+            disabled={!selectedArmy || !emailInput.trim() || sendingEmail || hasPending}
+          />
+        </View>
       </ScrollView>
     </View>
   );
