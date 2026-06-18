@@ -24,6 +24,7 @@
 
 const path = require('path');
 const webpack = require('webpack');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
 const createExpoWebpackConfigAsync = require('@expo/webpack-config');
 
 // Load .env into process.env (no-op if .env doesn't exist, which is the
@@ -35,9 +36,25 @@ const GITHUB_PAGES_BASE = '/AOSAbilityTracker/';
 module.exports = async function (env, argv) {
   const config = await createExpoWebpackConfigAsync(env, argv);
 
+  // The app is served from the Pages subpath in production, root in dev. The
+  // PWA layer reads this to register the service worker at the right scope.
+  const publicUrl = env.mode === 'production' ? GITHUB_PAGES_BASE : '/';
+
   if (env.mode === 'production') {
     config.output.publicPath = GITHUB_PAGES_BASE;
   }
+
+  // Copy the PWA static files (manifest, icon, service worker) to the build
+  // root so they sit alongside index.html and are served at the app's base.
+  config.plugins.push(
+    new CopyWebpackPlugin({
+      patterns: [
+        { from: path.resolve(__dirname, 'web/manifest.webmanifest'), to: 'manifest.webmanifest' },
+        { from: path.resolve(__dirname, 'web/service-worker.js'), to: 'service-worker.js' },
+        { from: path.resolve(__dirname, 'web/icon.svg'), to: 'icon.svg' },
+      ],
+    })
+  );
 
   // Inject the Supabase vars as compile-time constants. We use empty-string
   // fallbacks (rather than `undefined`) so the client code can still import
@@ -52,6 +69,12 @@ module.exports = async function (env, argv) {
       'process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY': JSON.stringify(
         process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || ''
       ),
+      // Base path the app is served from — used by the PWA service-worker
+      // registration to scope correctly under the Pages subpath. Note: a
+      // distinct name (NOT PUBLIC_URL) because Expo's base config already
+      // defines process.env.PUBLIC_URL; reusing it makes DefinePlugin emit a
+      // "conflicting values" warning and the resolution order is undefined.
+      'process.env.APP_PUBLIC_URL': JSON.stringify(publicUrl),
     })
   );
 

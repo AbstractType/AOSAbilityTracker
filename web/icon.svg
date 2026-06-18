@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="AOS Ability Tracker">
+  <!-- Maskable-safe: full-bleed background, emblem within the centered safe zone. -->
+  <rect width="512" height="512" fill="#0B1220"/>
+  <!-- Shield -->
+  <path d="M256 96 L392 144 V268 C392 352 332 404 256 432 C180 404 120 352 120 268 V144 Z"
+        fill="#15203A" stroke="#3F66D6" stroke-width="14" stroke-linejoin="round"/>
+  <!-- Phase bars (stacked, evoking the phase tracker) -->
+  <g fill="#5BA9FF">
+    <rect x="180" y="184" width="152" height="26" rx="6"/>
+    <rect x="180" y="226" width="120" height="26" rx="6" opacity="0.85"/>
+    <rect x="180" y="268" width="88"  height="26" rx="6" opacity="0.7"/>
+  </g>
+  <!-- Check mark (ability "used") -->
+  <path d="M196 332 L238 372 L322 300" fill="none" stroke="#4ADE80" stroke-width="22"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -25,6 +25,7 @@ import type { Challenge, WarRoom } from './src/types/warRoom';
 import { rowToChallenge } from './src/utils/challenges';
 import { acceptChallenge, declineChallenge, claimInvite } from './src/utils/challenges';
 import { getRoom } from './src/utils/warRoom';
+import { registerPwa } from './src/lib/pwa';
 
 /** localStorage key for an invite token awaiting a join (survives the
  *  sign-in / email-verification reload round trip). */
@@ -144,6 +145,13 @@ export default function App() {
   // The listener is the single source of truth — every UI change flows
   // through it, so the avatar updates automatically when the user signs in
   // from the LoginModal or completes verification via a magic link.
+  // Install the PWA layer (manifest, theming meta, service worker) once on
+  // mount. No-ops off web; idempotent. Kept separate from the auth effect so
+  // a registration failure can never affect session restore.
+  useEffect(() => {
+    registerPwa();
+  }, []);
+
   useEffect(() => {
     // ----- Invite-link parsing (query string, NOT the hash) -----
     // An invite link is `/?challenge=<token>`. We read the query synchronously

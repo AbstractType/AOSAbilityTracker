@@ -1,0 +1,19 @@
+{
+  "name": "AOS Ability Tracker",
+  "short_name": "AOS Tracker",
+  "description": "Track Age of Sigmar abilities by phase — solo or live against another player in a shared War Room.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0B1220",
+  "theme_color": "#0B1220",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
