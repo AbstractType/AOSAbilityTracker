@@ -171,6 +171,8 @@ interface LoginModalProps {
   onChooseUsername?: () => void;
   /** Enter the war-room lobby. Provided only when the user has a username. */
   onEnterWarRoom?: () => void;
+  /** Open the stats screen. */
+  onViewStats?: () => void;
 }
 
 /**
@@ -209,6 +211,7 @@ export default function LoginModal({
   profile,
   onChooseUsername,
   onEnterWarRoom,
+  onViewStats,
 }: LoginModalProps) {
   // Auth form state
   const [email, setEmail] = useState('');
@@ -756,6 +759,15 @@ export default function LoginModal({
                                 activeOpacity={0.85}
                               >
                                 <Text style={styles.warRoomBtnText}>⚔️  Enter War Room</Text>
+                              </TouchableOpacity>
+                            ) : null}
+                            {onViewStats ? (
+                              <TouchableOpacity
+                                style={styles.statsBtn}
+                                onPress={onViewStats}
+                                activeOpacity={0.7}
+                              >
+                                <Text style={styles.statsBtnText}>📊  View stats</Text>
                               </TouchableOpacity>
                             ) : null}
                           </>
@@ -1483,6 +1495,20 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: 15,
     fontWeight: '700',
+  },
+  statsBtn: {
+    marginTop: 8,
+    backgroundColor: '#101725',
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: '#22324A',
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  statsBtnText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '600',
   },
   subtleHint: {
     color: colors.textDim,

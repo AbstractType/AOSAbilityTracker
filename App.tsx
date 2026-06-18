@@ -5,6 +5,7 @@ import LandingScreen from './src/screens/LandingScreen';
 import AbilityTrackerScreen from './src/screens/AbilityTrackerScreen';
 import WarRoomLobbyScreen from './src/screens/WarRoomLobbyScreen';
 import WarRoomScreen from './src/screens/WarRoomScreen';
+import StatsScreen from './src/screens/StatsScreen';
 import LoginModal from './src/components/organisms/LoginModal';
 import IncomingChallengeModal from './src/components/organisms/IncomingChallengeModal';
 import JoinByLinkModal from './src/components/organisms/JoinByLinkModal';
@@ -65,7 +66,7 @@ function sessionToUser(session: Session | null): User | null {
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<
-    'landing' | 'tracker' | 'lobby' | 'warroom'
+    'landing' | 'tracker' | 'lobby' | 'warroom' | 'stats'
   >('landing');
   const [abilities, setAbilities] = useState<Ability[]>([]);
   const [wizards, setWizards] = useState<Wizard[]>([]);
@@ -425,6 +426,12 @@ export default function App() {
     setCurrentScreen('lobby');
   }
 
+  /** Open the stats screen (entry point from the Account modal). */
+  function openStats() {
+    setShowLoginModal(false);
+    setCurrentScreen('stats');
+  }
+
   function clearPendingInvite() {
     setPendingInviteToken(null);
     setShowJoinModal(false);
@@ -453,7 +460,9 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {currentScreen === 'lobby' && profile && user ? (
+      {currentScreen === 'stats' && user ? (
+        <StatsScreen savedArmies={savedArmies} onBack={() => setCurrentScreen('landing')} />
+      ) : currentScreen === 'lobby' && profile && user ? (
         <WarRoomLobbyScreen
           profile={profile}
           savedArmies={savedArmies}
@@ -512,6 +521,8 @@ export default function App() {
         }}
         // War-room entry: only when the user has claimed a username.
         onEnterWarRoom={profile ? openLobby : undefined}
+        // Stats are available to any verified user who's played.
+        onViewStats={openStats}
       />
 
       {/* Username claim — mounted at root so it can be opened from the account
