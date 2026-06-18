@@ -122,6 +122,14 @@ export default function WarRoomScreen({
   const [usedMap, setUsedMap] = useState<Map<string, boolean>>(new Map());
   const [opponentOnline, setOpponentOnline] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  // Opponent presence outcomes:
+  //  - opponentLeft: they tapped Leave (definitive, via a broadcast).
+  //  - opponentAway: they've been presence-offline past a grace period
+  //    (covers closing the tab / disconnecting, while tolerating a refresh).
+  const [opponentLeft, setOpponentLeft] = useState(false);
+  const [opponentAway, setOpponentAway] = useState(false);
+  // Channel handle so the Leave button can broadcast before tearing down.
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   // Local view controls.
   const [side, setSide] = useState<Side>('mine'); // narrow-screen tab
@@ -177,6 +185,10 @@ export default function WarRoomScreen({
         const presences = Object.values(channel.presenceState()).flat() as any[];
         setOpponentOnline(presences.some((p) => p.user_id === oppId));
       })
+      // Definitive "I'm leaving" signal sent by the other player's Leave button.
+      .on('broadcast', { event: 'left' }, (msg) => {
+        if ((msg.payload as any)?.user_id === oppId) setOpponentLeft(true);
+      })
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
           const rows = await getRoomState(room.id);
@@ -185,11 +197,40 @@ export default function WarRoomScreen({
         }
       });
 
+    channelRef.current = channel;
+
     return () => {
       cancelled = true;
+      channelRef.current = null;
       supabase.removeChannel(channel);
     };
   }, [room.id, myId, oppId]);
+
+  // Confirm an "away" opponent after a short grace period, so a quick refresh
+  // (offline → online) doesn't flash a "left" message. A definitive Leave
+  // (opponentLeft) supersedes this.
+  useEffect(() => {
+    if (opponentLeft || opponentOnline) {
+      setOpponentAway(false);
+      return;
+    }
+    const t = setTimeout(() => setOpponentAway(true), 6000);
+    return () => clearTimeout(t);
+  }, [opponentOnline, opponentLeft]);
+
+  // Leave: tell the opponent first (best-effort), then exit.
+  function handleLeave() {
+    try {
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'left',
+        payload: { user_id: myId },
+      });
+    } catch {
+      /* best-effort */
+    }
+    onLeave();
+  }
 
   async function toggleMine(key: string) {
     const cur = usedMap.get(stateKey(myId, key)) ?? false;
@@ -287,10 +328,33 @@ export default function WarRoomScreen({
       {/* Top bar */}
       <View style={[styles.bar, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
         <Text style={styles.heading}>War Room</Text>
-        <TouchableOpacity onPress={onLeave} style={styles.leaveBtn} accessibilityLabel="Leave war room">
+        <TouchableOpacity onPress={handleLeave} style={styles.leaveBtn} accessibilityLabel="Leave war room">
           <Text style={styles.leaveText}>Leave</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Opponent gone banner: definitive leave (red) or disconnected (amber) */}
+      {opponentLeft || opponentAway ? (
+        <View
+          style={[
+            styles.bar,
+            { maxWidth: contentMaxWidth, paddingHorizontal: padding, paddingTop: 0, paddingBottom: 0 },
+          ]}
+        >
+          <View style={[styles.goneBanner, opponentLeft ? styles.goneLeft : styles.goneAway]}>
+            <Text style={styles.goneText}>
+              {opponentLeft
+                ? `${oppTitle} left the war room — you're on your own now.`
+                : `${oppTitle} seems to have disconnected. Their marks won't update until they're back.`}
+            </Text>
+            {opponentLeft ? (
+              <TouchableOpacity onPress={handleLeave} style={styles.goneBtn} activeOpacity={0.8}>
+                <Text style={styles.goneBtnText}>Leave</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
 
       {/* Controls: whose turn + phase selector */}
       <View style={[styles.controls, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
@@ -401,6 +465,44 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   leaveText: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  goneBanner: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  goneLeft: {
+    backgroundColor: '#3A1E22',
+    borderColor: '#7F3D44',
+  },
+  goneAway: {
+    backgroundColor: '#3A301E',
+    borderColor: '#7F6A3D',
+  },
+  goneText: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  goneBtn: {
+    backgroundColor: '#6F384F',
+    borderRadius: radii.md,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+  },
+  goneBtnText: {
     color: colors.textPrimary,
     fontSize: 13,
     fontWeight: '700',
