@@ -1,8 +1,8 @@
 # AOS Ability Tracker
 
-A phase-by-phase ability tracker for Age of Sigmar 4th edition. Paste your BattleScribe roster JSON, step through the game's eight phases, and tick off abilities as you use them.
+A phase-by-phase ability tracker for Age of Sigmar 4th edition. Paste your BattleScribe roster JSON, step through the game's eight phases, and tick off abilities as you use them — solo, or live against another player in a shared "War Room".
 
-**Status:** Alpha v0.2 — web only, real accounts with email verification, cross-device army sync. See [Status](#status-alpha-v02) for the honest list of what works and what doesn't.
+**Status:** Alpha v0.3 — web only. Adds per-account ability customization (notes / hide / drag-reorder), password reset, and a real-time multiplayer **War Room**. See [Status](#status-alpha-v03) for the honest list of what works and what doesn't.
 
 **Live:** https://abstracttype.github.io/AOSAbilityTracker/
 
@@ -10,36 +10,49 @@ A phase-by-phase ability tracker for Age of Sigmar 4th edition. Paste your Battl
 
 ## What it does
 
+### Solo tracker
 - **Paste a BattleScribe roster JSON** on the landing page. The app extracts every ability and groups them by game phase.
-- **Walk through eight phases in order** — Deployment, Start of Turn, Hero, Movement, Shooting, Charge, Combat, End of Turn — or jump straight to one. Phase selection is constrained to the current phase and the next one so you can't accidentally skip ahead.
-- **Tap an ability card to mark it used.** Used cards dim so you can see at a glance what's still available.
-- **Complete Deployment** once at game start. The Deployment phase then hides for the rest of the game (those abilities only fire once).
-- **Next Turn** at end-of-turn resets every ability's used state — except Deployment abilities.
-- **Wizards / Priests** sections show your casters and their spell counts, parsed from the roster JSON.
-- **Search** in the header filters the ability list live across name, source, keyword, timing, and description. Phase sections with zero matches disappear so you only see what you're looking for.
-- **Keywords** modal lists rules-text definitions for army keywords that need them.
-- **Real accounts.** Register with email + password, click the verification link, sign in across any device — your saved armies follow you.
-- **Save armies.** Up to 3 rosters per account, stored in Supabase. No more re-pasting JSON every session, and no data loss if you clear your browser.
-- **Responsive.** Phones (portrait + landscape), tablets, and desktop. Wide screens use a masonry layout so cards of different heights don't leave empty cells.
+- **Walk through eight phases** — Deployment, Start of Turn, Hero, Movement, Shooting, Charge, Combat, End of Turn — or jump to one. Phase selection is constrained to the current/next phase so you can't skip ahead.
+- **Tap an ability card to mark it used** (used cards dim). **Complete Deployment** once at game start (it then hides); **Next Turn** at end-of-turn resets everything except Deployment.
+- **Wizards / Priests** sections, **live search** (name / source / keyword / timing / description), and a **Keywords** reference modal.
+- **Responsive** — phones (portrait + landscape), tablets, desktop. Wide screens use a masonry layout so uneven card heights don't leave gaps.
 
-## Status: Alpha v0.2
+### Accounts
+- **Register with email + password**, click the verification link, sign in across any device.
+- **Forgot / change password** flows (reset email + in-account change).
+- **Save up to 3 armies** per account (stored in Supabase) — no re-pasting JSON, no loss when you clear your browser.
+
+### Customize your abilities (per account, synced)
+- **Long-press any ability card** for a menu: **add a note** (shown on the card), or **hide** an ability you've memorized.
+- **Reorder mode** (header toggle): cards wiggle and become **drag-to-reorder within their phase**; the order persists to your account.
+- **Show Hidden** toggle brings hidden abilities back so you can un-hide them.
+
+### War Room (real-time multiplayer)
+- **Claim a username**, then **challenge another player** three ways: an **in-app alert** (if they're online), a **shareable link** (WhatsApp/Discord/etc.), or an **email invite**.
+- The opponent **accepts by picking a saved army**; both land in a shared room.
+- **Both armies, grouped by phase** — side-by-side on wide screens, tabbed on phones, with a tracker-style phase selector on top.
+- **Ability "used" state syncs live** between both players, with an **opponent-online** presence dot.
+- A **"whose turn"** toggle filters each army to what's usable now — your *on-turn* abilities ("Your Hero Phase") vs. the opponent's *reactive* ones ("Enemy Movement Phase", "Reaction: …").
+- **One active challenge at a time** with a **2-minute response timer** (auto-declines on timeout); **leave/disconnect notifications** when your opponent goes.
+- **Stats screen** — most-used and never-used abilities across all your war rooms.
+
+## Status: Alpha v0.3
 
 **What works:**
-- Everything in the feature list above.
-- Real email/password auth via Supabase, with email verification gating the save feature.
-- Cross-device sync of saved armies (any verified account; up to 3 armies per user).
-- Web build, deployed to GitHub Pages, with Supabase env vars injected at build time.
+- Everything above. Auth, customization, and multiplayer all run on Supabase (Postgres + Row Level Security + Realtime).
+- Web build, auto-deployed to GitHub Pages, with Supabase env vars injected at build time.
 
-**What is intentionally minimal in v0.2:**
-- **Email + password only.** No display name, no username, no OAuth (Google/Apple/GitHub). Add later if there's a real ask.
-- **No password reset flow yet.** If you forget your password, the workaround is to register again with a different email. Real reset is on the v0.3 list.
-- **Magic-link verification.** Click the link in the signup email to verify; we don't do OTP codes.
-- **No PWA / offline mode yet.**
-- **Native iOS/Android builds not shipped.** The codebase is Expo, so native targets are reachable — but they're deferred. See [Roadmap](#roadmap).
+**Intentionally minimal in v0.3:**
+- **The "whose turn" toggle is local**, not synced — each player controls their own view.
+- **No time-per-phase stats yet** — that needs the room to gain a synced turn/phase clock (Next-phase / Next-turn controls + timestamping), which is a feature of its own. Ability-usage stats are in; phase timing is parked.
+- **Email invites require the Edge Function deployed** (see [War Room email setup](#war-room-email-invites-optional)). In-app + link invites work with no extra infra.
+- **Email + password only** — no OAuth / usernames-as-login.
+- **No PWA / offline mode; native iOS/Android not shipped.**
 
 **Known limitations:**
-- Pinned to **Expo SDK 48**, which is past end-of-life. Works fine in the browser today but blocks native builds and some modern Expo features. SDK upgrade is on the roadmap.
-- **BattleScribe JSON parsing** is opinionated to the format used by AoS armies in BattleScribe 2.0+. Other roster export formats are not supported.
+- Pinned to **Expo SDK 48** (past end-of-life) — fine in the browser, but blocks native builds and some modern Expo features. SDK upgrade is on the roadmap.
+- **Timing classification** for the war room's turn filter is a heuristic on free-text timing strings (`your` / `enemy` / `reaction` / `any`); unusual phrasings may misclassify.
+- **BattleScribe JSON parsing** targets the format used by AoS armies in BattleScribe 2.0+. Other exports aren't supported.
 
 ## Try it locally
 
@@ -50,154 +63,112 @@ git clone https://github.com/AbstractType/AOSAbilityTracker.git
 cd AOSAbilityTracker
 npm install
 cp .env.example .env
-# Edit .env to fill in your Supabase project URL + anon key
-#   (see "Setting up your own Supabase project" below)
-npm run web        # opens the dev server (usually http://localhost:19006)
+# Fill in your Supabase project URL + anon key (see below)
+npm run web        # dev server, usually http://localhost:19006
 ```
 
-Produce a production web bundle:
+Production web bundle:
 
 ```bash
-npm run build:web  # writes to ./web-build/
+npm run build:web  # writes ./web-build/
 ```
 
-Native targets (untested — listed for completeness):
-
-```bash
-npm run android    # requires Android Studio + emulator/device
-npm run ios        # requires Xcode (macOS only)
-```
+Native targets (untested — listed for completeness): `npm run android`, `npm run ios`.
 
 ## Setting up your own Supabase project
 
-If you fork or self-host this app you'll need your own Supabase project. The official one only accepts auth + writes from `abstracttype.github.io`.
+If you fork or self-host, you'll need your own Supabase project.
 
-1. **Create a project** at https://supabase.com (free tier is plenty for an alpha).
-2. **Apply the schema** — open the SQL Editor and paste [`docs/schema.sql`](./docs/schema.sql) (also reproduced below).
-3. **Configure auth redirect URLs** under **Authentication → URL Configuration**:
-   - Site URL: your deployed URL (e.g. `https://<your-username>.github.io/<your-repo>/`)
-   - Redirect URLs (add each):
-     - `https://<your-username>.github.io/<your-repo>/**`
-     - `http://localhost:19006/**` (dev)
-4. **Confirm email is enabled** — Authentication → Providers → Email → ensure "Confirm email" is on.
-5. **Copy your credentials** — Project Settings → API → Project URL + anon/public key.
-   - Local dev: paste into `.env`.
-   - CI: add as GitHub Actions secrets `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
+1. **Create a project** at https://supabase.com (free tier is plenty).
+2. **Apply the schema** — open the SQL Editor and run each migration in
+   [`supabase/migrations/`](./supabase/migrations) **in order**:
+   - `0001_profiles.sql` — usernames + user search
+   - `0002_war_room.sql` — challenges + war rooms + accept RPC
+   - `0003_war_room_state.sql` — live used-state sync
+   - `0004_invite_links.sql` — invite-link claim/peek RPCs
+   - `0005_challenge_limits.sql` — one-active-challenge rule + timer cleanup
+   - (The original `armies` and `ability_customizations` tables predate this folder — their SQL is reproduced in the git history / earlier releases. If starting fresh, see the inline schema in the `v0.2` README tag or ask.)
+3. **Realtime** — migrations `0002`/`0003` add `challenges` and `war_room_state` to the `supabase_realtime` publication. Confirm Realtime is enabled under **Database → Replication**.
+4. **Auth redirect URLs** — **Authentication → URL Configuration**: Site URL = your deployed URL; add redirect URLs for `https://<you>.github.io/<repo>/**` and `http://localhost:19006/**`. Ensure **Confirm email** is on under Providers → Email.
+5. **Credentials** — Project Settings → API → Project URL + anon key. Local: into `.env`. CI: GitHub Actions secrets `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
 
-The anon key is **safe to embed in client code** — Row Level Security on the `armies` table enforces that one user can't read or modify another user's rows. The `service_role` key, on the other hand, bypasses RLS and must never appear in the client.
+The anon key is **safe in client code** — RLS enforces that one user can never read or modify another's rows (including the realtime change feed). The `service_role` key bypasses RLS and must never ship to the client.
 
-### Schema
+### War Room email invites (optional)
 
-```sql
-create table public.armies (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  name text not null,
-  json text not null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-create index armies_user_id_idx on public.armies(user_id);
-
-alter table public.armies enable row level security;
-create policy "armies_select_own" on public.armies for select using (auth.uid() = user_id);
-create policy "armies_insert_own" on public.armies for insert with check (auth.uid() = user_id);
-create policy "armies_update_own" on public.armies for update using (auth.uid() = user_id);
-create policy "armies_delete_own" on public.armies for delete using (auth.uid() = user_id);
-
-create or replace function public.enforce_army_limit()
-returns trigger language plpgsql security definer as $$
-begin
-  if (select count(*) from public.armies where user_id = new.user_id) >= 3 then
-    raise exception 'User has reached the 3-army limit' using errcode = 'check_violation';
-  end if;
-  return new;
-end;
-$$;
-
-create trigger armies_limit_trigger
-  before insert on public.armies
-  for each row execute function public.enforce_army_limit();
-```
+Email invites need one Edge Function + [Resend](https://resend.com). Full Dashboard-only steps are in
+[`supabase/functions/send-challenge-email/README.md`](./supabase/functions/send-challenge-email/README.md) — create the function, set `RESEND_API_KEY` + `WEBHOOK_SECRET` secrets, and add a Database Webhook on `challenges` INSERT. In-app and link invites work without this.
 
 ## Deploy
 
-The web build deploys to GitHub Pages automatically on every push to `main` via [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml).
+The web build auto-deploys to GitHub Pages on every push to `main` via [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml).
 
-**One-time repo setup** (only needed when first standing up a deploy — the workflow auto-enables Pages via the `enablement: true` param on `actions/configure-pages`):
-1. Add the two GitHub Actions secrets used at build time:
-   - `EXPO_PUBLIC_SUPABASE_URL`
-   - `EXPO_PUBLIC_SUPABASE_ANON_KEY`
-   Both are safe to be "public" — the anon key is designed for client use. They're stored as secrets so that rotating them later doesn't require a code change.
+**One-time:** set GitHub Actions secrets `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` (both safe to be public — the anon key is for client use; they're secrets so rotation needs no code change). The workflow auto-enables Pages.
 
-After that:
-- Push to `main` → workflow builds + deploys.
-- Live at https://abstracttype.github.io/AOSAbilityTracker/.
+**If you fork** to a different `owner/name`, update `GITHUB_PAGES_BASE` in [`webpack.config.js`](./webpack.config.js) to `/your-repo-name/`, or asset URLs 404 (Pages serves at a subpath).
 
-**If you fork this repo** to a different `owner/name`, update `GITHUB_PAGES_BASE` in [`webpack.config.js`](./webpack.config.js) to match `/your-repo-name/`. Without that change every asset URL in the built bundle 404s because Pages serves at a subpath, not at root.
+A separate daily workflow ([`.github/workflows/keep-warm.yml`](./.github/workflows/keep-warm.yml)) pings Supabase so the free-tier project doesn't auto-pause after 7 days idle.
 
-## How accounts actually work
+## How accounts + data work
 
-Real auth this time (no stub). The flow:
+1. **Register** → Supabase hashes the password and creates an `auth.users` row.
+2. A **verification email** (magic link) confirms the account; until then, account-bound features (save, customize, multiplayer) are gated.
+3. **Sign in** anywhere with the same credentials; your armies, customizations, and stats follow you.
 
-1. **Register** with email + password. Supabase hashes the password (bcrypt) and creates an `auth.users` row.
-2. Supabase **sends a verification email** with a magic link pointing back at our deployed site.
-3. Until you click that link, `email_confirmed_at` is null on your user record. The Account modal shows a banner: "Verify your email to save armies" with a Resend button. The save UI is hidden.
-4. **Click the link** → the SDK detects the auth tokens in the URL hash and completes the session. `email_confirmed_at` flips to a timestamp. The Account modal refreshes to show the Army Lists section.
-5. **Sign in** from any device with the same email/password. Your armies (stored server-side in Postgres) appear immediately.
-
-Saved armies are protected by **Row Level Security**: every query is automatically filtered to rows where `user_id = auth.uid()`. There is no client-side way to read or modify another user's data, even with a valid anon key.
+Everything is protected by **Row Level Security** — every query (and every realtime change event) is filtered to rows the signed-in user is allowed to see. Cross-user actions that RLS can't express directly (creating a war room as the *other* player on accept, joining by invite token) go through `security definer` RPCs that verify the caller first. There's no client-side way to read or modify another user's data, even with a valid anon key.
 
 ## Project structure
 
 ```
 src/
   components/
-    atoms/         Reusable primitives (Badge, Button, Divider, ...)
-    molecules/     Small composites (PhaseButton, SearchBar, BurgerMenu, ...)
-    organisms/     Self-contained sections (AppHeader, AbilityList, LoginModal, ...)
-    templates/     Page-level layouts that compose organisms
-  screens/         Top-level screens (LandingScreen, AbilityTrackerScreen)
-  lib/             External-service clients (supabase.ts)
-  utils/           jsonParser, responsive, savedArmies (Supabase wrapper)
-  theme/           Color / spacing / typography tokens
+    atoms/         Primitives (Badge, Button, ...)
+    molecules/     Small composites (PhaseButton, SearchBar, SavedArmyPicker, ...)
+    organisms/     Sections + modals (AppHeader, AbilityList, LoginModal,
+                   ReorderableAbilityList, AbilityContextMenu, NoteEditorModal,
+                   UsernamePromptModal, IncomingChallengeModal, JoinByLinkModal)
+    templates/     Page layouts (TrackerTemplate, LandingTemplate)
+  screens/         LandingScreen, AbilityTrackerScreen, WarRoomLobbyScreen,
+                   WarRoomScreen, StatsScreen
+  lib/             supabase.ts (client)
+  utils/           jsonParser, responsive, savedArmies, customizations,
+                   profiles, challenges, warRoom, warRoomState, stats
+  theme/           Design tokens
   types.ts         Ability + Phase types
-  types/           Per-feature type modules (user, army)
-App.tsx            Root: screen routing, global modals, Supabase session sub
-webpack.config.js  publicPath for Pages subpath + Supabase env var injection
-.env.example       Template for local Supabase credentials (copy to .env)
+  types/           user, army, customization, profile, warRoom
+App.tsx            Root: routing, global modals, Supabase session + realtime
+                   challenge-inbox subscription, invite-link deep-linking
+supabase/
+  migrations/      SQL applied in the Dashboard (0001–0005)
+  functions/       send-challenge-email Edge Function (Resend)
+webpack.config.js  Pages publicPath + Supabase env injection
 ```
 
-Atomic design: lower layers know nothing about higher ones. Templates take fully-resolved data + callbacks; screens own the state.
+Atomic design: lower layers know nothing about higher ones; screens own state, templates take resolved data + callbacks.
 
 ## Roadmap
 
-**v0.3 (next)**
-- Password reset flow ("Forgot password" link → reset email)
-- Upgrade Expo SDK 48 → SDK 50+
-- PWA manifest + offline support (cached read-only access to already-loaded armies)
-- Cover more BattleScribe roster edge cases
+**Shipped since v0.2:** ability customization (notes / hide / drag-reorder), password reset + change, the full War Room (usernames, in-app / link / email challenges, live used-sync, turn-role filtering, leave notifications), and usage stats.
 
-**v0.4+**
-- Native iOS + Android via EAS Build (TestFlight + Play Internal Testing before public release)
-- Per-turn history / undo
-- Shared phase tracker for two-player games (longer term)
-- OAuth providers (Google / Apple) if there's user demand
+**Next**
+- **Time-per-phase stats** — needs a synced turn/phase clock in the war room (Next-phase / Next-turn controls + timestamping).
+- Upgrade **Expo SDK 48 → 50+**.
+- **PWA** manifest + offline (cached read-only access to loaded armies).
+- More BattleScribe roster edge cases.
 
-**v1.0**
-- Public iOS / Android store release after playtester feedback
+**Later**
+- Native iOS + Android via EAS Build (TestFlight + Play Internal Testing).
+- Per-turn history / undo; OAuth providers if there's demand.
+
+**v1.0** — public store release after playtester feedback.
 
 ## Tech stack
 
-- Expo SDK 48 (React Native 0.71)
-- TypeScript
-- React Native Web (webpack-based — SDK 48 default)
-- Supabase (Postgres + Auth) for accounts + persistent army storage
+- Expo SDK 48 (React Native 0.71) + TypeScript
+- React Native Web (webpack — SDK 48 default)
+- Supabase: Postgres + Auth + **Realtime** (presence + Postgres-change subscriptions) + one **Edge Function** (Deno, for email)
 - GitHub Actions + GitHub Pages for hosting
 
 ## Contributing
 
-This is an alpha — APIs, UI, and data shapes will change without warning. If you're using it day-to-day and run into a roster-parsing edge case or layout bug, open an issue with:
-- The relevant chunk of BattleScribe JSON (anonymized if needed).
-- What you expected to see.
-- What you actually saw (screenshot helps).
+Alpha — APIs, UI, and data shapes change without warning. If you hit a roster-parsing edge case or a bug, open an issue with the relevant (anonymized) BattleScribe JSON, what you expected, and what happened (screenshots help).
