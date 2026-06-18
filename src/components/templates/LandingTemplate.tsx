@@ -12,13 +12,17 @@ import Button from '../atoms/Button';
 import UserButton from '../molecules/UserButton';
 import { colors, radii } from '../../theme/tokens';
 import { useResponsive, getContentMaxWidth } from '../../utils/responsive';
+import { useJsonFileInput } from '../../lib/jsonFileInput';
 import type { User } from '../../types/user';
 
 interface LandingTemplateProps {
   jsonInput: string;
   loading: boolean;
   onJsonInputChange: (text: string) => void;
+  /** Load whatever is currently in the paste box. */
   onLoadJson: () => void;
+  /** Load explicit roster text (from a dropped or browsed file). */
+  onLoadFromText: (text: string) => void;
   onLoadExample: () => void;
   /** Current signed-in user (drives the header user button) */
   user: User | null;
@@ -26,15 +30,56 @@ interface LandingTemplateProps {
   onOpenLogin: () => void;
 }
 
+const ACCENT = '#3F66D6';
+
+/** Capabilities advertised on the landing page, in display order. */
+const FEATURES: { glyph: string; title: string; blurb: string }[] = [
+  {
+    glyph: '⚔️',
+    title: 'Live War Room',
+    blurb:
+      'Challenge a friend by username, link, or email. Both armies side by side, abilities synced live, with a shared turn & phase clock.',
+  },
+  {
+    glyph: '👤',
+    title: 'Accounts & saved lists',
+    blurb: 'Sign in and keep up to three army lists ready to load in a tap.',
+  },
+  {
+    glyph: '📊',
+    title: 'Usage stats',
+    blurb: 'See your most- and least-used abilities, plus the time you spend in each phase.',
+  },
+  {
+    glyph: '✏️',
+    title: 'Make it yours',
+    blurb: "Add notes, hide abilities you don't need, and drag-reorder cards per phase.",
+  },
+  {
+    glyph: '🔍',
+    title: 'Fast search',
+    blurb: 'Filter abilities by name or keyword in the middle of a game.',
+  },
+  {
+    glyph: '📱',
+    title: 'Installable',
+    blurb: 'Add it to your home screen and keep tracking even when you go offline.',
+  },
+];
+
 /**
  * LandingTemplate — page layout for the JSON input/landing screen.
- * Centered, max-width content with responsive padding and button layouts.
+ *
+ * Two jobs: get a roster in (drag-and-drop a file, browse for one, or paste),
+ * and show off what the app can do once it's loaded. Centered, max-width
+ * content with responsive padding and a reflowing feature-card grid.
  */
 export default function LandingTemplate({
   jsonInput,
   loading,
   onJsonInputChange,
   onLoadJson,
+  onLoadFromText,
   onLoadExample,
   user,
   onOpenLogin,
@@ -42,6 +87,10 @@ export default function LandingTemplate({
   const responsive = useResponsive();
   const { width, scaleFont, select } = responsive;
   const contentMaxWidth = getContentMaxWidth(width);
+
+  const { dropRef, dragActive, openFilePicker, isWeb } = useJsonFileInput(onLoadFromText);
+
+  const cardWidth = select({ mobile: '100%', tablet: '48%', default: '31.5%' }) as any;
 
   return (
     <KeyboardAvoidingView
@@ -80,7 +129,7 @@ export default function LandingTemplate({
                 },
               ]}
             >
-              Paste your BattleScribe roster JSON to load abilities and track their usage.
+              Track every ability, every phase — solo or live against an opponent.
             </Text>
           </View>
 
@@ -91,81 +140,89 @@ export default function LandingTemplate({
                 { fontSize: scaleFont(select({ mobile: 15, default: 16 })) },
               ]}
             >
-              Paste Roster JSON
+              Load your roster
             </Text>
-            <TextInput
-              style={[
-                styles.input,
-                {
-                  minHeight: select({ mobile: 140, tablet: 180, default: 220 }),
-                  fontSize: scaleFont(select({ mobile: 13, default: 14 })),
-                },
-              ]}
-              placeholder="Paste your JSON here..."
-              placeholderTextColor="#888"
-              value={jsonInput}
-              onChangeText={onJsonInputChange}
-              multiline
-              editable={!loading}
+
+            {/* Drop zone: drag a file anywhere onto this dashed box (web), or
+                paste into the field. The whole box highlights while a file is
+                dragged over it. */}
+            <View
+              ref={dropRef}
+              style={[styles.dropZone, dragActive && styles.dropZoneActive]}
+            >
+              {isWeb && (
+                <Text style={[styles.dropHint, dragActive && styles.dropHintActive]}>
+                  {dragActive
+                    ? 'Drop your roster file to load'
+                    : '⬇  Drag a roster .json file here, or paste it below'}
+                </Text>
+              )}
+              <TextInput
+                style={[
+                  styles.input,
+                  {
+                    minHeight: select({ mobile: 130, tablet: 170, default: 200 }),
+                    fontSize: scaleFont(select({ mobile: 13, default: 14 })),
+                  },
+                ]}
+                placeholder="Paste your BattleScribe roster JSON here..."
+                placeholderTextColor="#6C7A90"
+                value={jsonInput}
+                onChangeText={onJsonInputChange}
+                multiline
+                editable={!loading}
+              />
+              <View style={styles.miniActions}>
+                {isWeb && (
+                  <Button
+                    label="Browse file"
+                    onPress={openFilePicker}
+                    disabled={loading}
+                    variant="secondary"
+                    compact
+                  />
+                )}
+                <Button
+                  label="Load Example"
+                  onPress={onLoadExample}
+                  disabled={loading}
+                  variant="secondary"
+                  compact
+                />
+              </View>
+            </View>
+
+            <Button
+              label={loading ? 'Loading...' : 'Load Abilities'}
+              onPress={onLoadJson}
+              disabled={loading}
+              variant="primary"
+              style={styles.loadButton}
             />
 
-            <View
+            {/* Feature showcase — reflows 1 / 2 / 3 columns by breakpoint. */}
+            <Text
               style={[
-                styles.buttonRow,
-                {
-                  flexDirection: select({ mobile: 'column', default: 'row' }) as
-                    | 'row'
-                    | 'column',
-                },
+                styles.sectionHeading,
+                { fontSize: scaleFont(select({ mobile: 17, default: 20 })) },
               ]}
             >
-              <Button
-                label={loading ? 'Loading...' : 'Load Abilities'}
-                onPress={onLoadJson}
-                disabled={loading}
-                variant="primary"
-                style={[
-                  styles.button,
-                  {
-                    flex: select({ mobile: undefined, default: 1 }) as any,
-                    width: select({ mobile: '100%' as any, default: undefined }),
-                  },
-                ]}
-              />
-              <Button
-                label="Load Example"
-                onPress={onLoadExample}
-                disabled={loading}
-                variant="secondary"
-                style={[
-                  styles.button,
-                  {
-                    flex: select({ mobile: undefined, default: 1 }) as any,
-                    width: select({ mobile: '100%' as any, default: undefined }),
-                  },
-                ]}
-              />
+              What's inside
+            </Text>
+            <View style={styles.featureGrid}>
+              {FEATURES.map((f) => (
+                <View key={f.title} style={[styles.featureCard, { width: cardWidth }]}>
+                  <Text style={styles.featureGlyph}>{f.glyph}</Text>
+                  <Text style={styles.featureTitle}>{f.title}</Text>
+                  <Text style={styles.featureBlurb}>{f.blurb}</Text>
+                </View>
+              ))}
             </View>
 
-            <View style={styles.infoBox}>
-              <Text style={styles.infoTitle}>How to use:</Text>
-              <Text style={styles.infoText}>
-                1. Export your army list as JSON from BattleScribe
-              </Text>
-              <Text style={styles.infoText}>2. Copy and paste the entire JSON file above</Text>
-              <Text style={styles.infoText}>
-                3. Click "Load Abilities" to extract your army's abilities
-              </Text>
-              <Text style={styles.infoText}>4. Track ability usage during your game</Text>
-            </View>
-
-            <View style={styles.supportedBox}>
-              <Text style={styles.supportedTitle}>Supported Phases:</Text>
-              <Text style={styles.supportedText}>
-                Deployment Phase, Start of Turn, Hero Phase, Movement Phase, Shooting Phase,
-                Charge Phase, Combat Phase, End of Turn
-              </Text>
-            </View>
+            <Text style={styles.supportedText}>
+              Supported phases: Deployment, Start of Turn, Hero, Movement, Shooting, Charge,
+              Combat, End of Turn.
+            </Text>
           </View>
         </View>
       </ScrollView>
@@ -192,7 +249,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   header: {
-    marginBottom: 32,
+    marginBottom: 28,
   },
   title: {
     fontWeight: 'bold',
@@ -210,54 +267,78 @@ const styles = StyleSheet.create({
     color: '#E9F0FF',
     marginBottom: 8,
   },
-  input: {
+  dropZone: {
     backgroundColor: '#101725',
     borderRadius: radii.md,
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: '#22324A',
+    borderStyle: 'dashed',
     padding: 12,
+    marginBottom: 16,
+  },
+  dropZoneActive: {
+    borderColor: ACCENT,
+    backgroundColor: '#142146',
+  },
+  dropHint: {
+    color: '#8FA1BC',
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 10,
+  },
+  dropHintActive: {
+    color: '#AFC4FF',
+  },
+  input: {
     color: colors.textPrimary,
     textAlignVertical: 'top',
-    marginBottom: 16,
+    padding: 0,
   },
-  buttonRow: {
+  miniActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  loadButton: {
+    marginBottom: 28,
+  },
+  sectionHeading: {
+    color: colors.textPrimary,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
+  featureGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 12,
-    marginBottom: 24,
+    marginBottom: 20,
   },
-  button: {
-    minWidth: 0,
-  },
-  infoBox: {
+  featureCard: {
     backgroundColor: '#15203A',
     borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: '#1E2C49',
     padding: 16,
-    marginBottom: 16,
   },
-  infoTitle: {
-    color: colors.textPrimary,
-    fontWeight: '700',
+  featureGlyph: {
+    fontSize: 24,
     marginBottom: 8,
-    fontSize: 15,
   },
-  infoText: {
-    color: '#C8D5E8',
-    marginBottom: 4,
-    fontSize: 14,
-  },
-  supportedBox: {
-    backgroundColor: '#15203A',
-    borderRadius: radii.md,
-    padding: 16,
-  },
-  supportedTitle: {
+  featureTitle: {
     color: colors.textPrimary,
     fontWeight: '700',
-    marginBottom: 6,
     fontSize: 15,
+    marginBottom: 4,
+  },
+  featureBlurb: {
+    color: '#C8D5E8',
+    fontSize: 13,
+    lineHeight: 19,
   },
   supportedText: {
-    color: '#C8D5E8',
-    fontSize: 14,
-    lineHeight: 21,
+    color: colors.textMuted,
+    fontSize: 13,
+    lineHeight: 20,
   },
 });
