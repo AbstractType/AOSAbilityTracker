@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
-import { Alert } from 'react-native';
 import type { User } from '../types/user';
 import LandingTemplate from '../components/templates/LandingTemplate';
 import { exampleRoster } from '../data/exampleRoster';
+import { parseAbilitiesFromJSON } from '../utils/jsonParser';
 
 interface LandingScreenProps {
   /**
    * Hands a raw JSON string up to the App, which parses it and (on success)
-   * navigates to the tracker. Returns true on success so we can clear the form.
+   * navigates to the tracker. Returns true on success. We only call this once
+   * we've already confirmed the JSON yields abilities, so its own
+   * failure path never fires from here.
    */
   onLoadJson: (json: string) => boolean;
   /** Current signed-in user (used to render the user button in the header) */
@@ -16,9 +18,17 @@ interface LandingScreenProps {
   onOpenLogin: () => void;
 }
 
+// A real BattleScribe roster is large and brace-wrapped. Use that as a cheap
+// gate so typing/partial input doesn't trigger a parse on every keystroke —
+// only attempt an auto-load once the box plausibly holds a whole roster.
+const LOOKS_LIKE_ROSTER_MIN_LEN = 200;
+
 /**
- * LandingScreen — entry page where the user pastes a BattleScribe roster JSON.
- * Acts as a thin controller that wires user actions to the LandingTemplate.
+ * LandingScreen — entry page where the user provides a BattleScribe roster JSON
+ * by dragging a file in, browsing for one, or pasting. There's no "load" button:
+ * the moment the input is a valid roster (by any of those routes, or the example),
+ * we load it and move straight to the tracker. Invalid input shows an inline hint
+ * rather than a blocking alert, since there's no button to retry with.
  */
 export default function LandingScreen({
   onLoadJson,
@@ -27,58 +37,63 @@ export default function LandingScreen({
 }: LandingScreenProps) {
   const [jsonInput, setJsonInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadHint, setLoadHint] = useState<string | null>(null);
 
-  function handleLoadJSON() {
-    if (!jsonInput.trim()) {
-      Alert.alert('Error', 'Please paste JSON data first');
+  /**
+   * Validate and (if it's a real roster) load + advance. Used by every input
+   * route: dropped/browsed file, a completed paste, and the example. Pre-parsing
+   * here means we only call the App loader on success, so its failure Alert never
+   * fires — invalid input surfaces as an inline hint instead.
+   */
+  function tryLoad(text: string) {
+    setJsonInput(text);
+    if (!text.trim()) {
+      setLoadHint(null);
       return;
     }
     setLoading(true);
     try {
-      const ok = onLoadJson(jsonInput);
-      if (ok) {
-        setJsonInput('');
+      const parsed = parseAbilitiesFromJSON(text);
+      if (parsed.abilities.length > 0) {
+        setLoadHint(null);
+        onLoadJson(text); // navigates to the tracker
+      } else {
+        setLoadHint(
+          "That doesn't look like a complete roster — make sure you pasted or dropped the whole JSON file."
+        );
       }
+    } catch {
+      setLoadHint("Couldn't read that as JSON. Check the file and try again.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  function handleJsonChange(text: string) {
+    setJsonInput(text);
+    if (loadHint) setLoadHint(null);
+    const trimmed = text.trim();
+    // Once the box looks like a full roster (e.g. just pasted), auto-load it.
+    if (
+      trimmed.length > LOOKS_LIKE_ROSTER_MIN_LEN &&
+      trimmed.startsWith('{') &&
+      trimmed.endsWith('}')
+    ) {
+      tryLoad(text);
     }
   }
 
   function handleLoadExample() {
-    setJsonInput(JSON.stringify(exampleRoster, null, 2));
-  }
-
-  /**
-   * Load roster text that came from a file (drag-drop or the file picker).
-   * Unlike the paste flow, we have the text in hand, so we hand it straight to
-   * the App's string-based loader rather than routing through `jsonInput` state
-   * (which updates async and would otherwise be parsed stale). We still mirror
-   * it into the box so a failed parse leaves the content visible to fix.
-   */
-  function handleLoadFromText(text: string) {
-    if (!text.trim()) {
-      Alert.alert('Empty file', "That file didn't contain any text.");
-      return;
-    }
-    setJsonInput(text);
-    setLoading(true);
-    try {
-      const ok = onLoadJson(text);
-      if (ok) {
-        setJsonInput('');
-      }
-    } finally {
-      setLoading(false);
-    }
+    tryLoad(JSON.stringify(exampleRoster, null, 2));
   }
 
   return (
     <LandingTemplate
       jsonInput={jsonInput}
       loading={loading}
-      onJsonInputChange={setJsonInput}
-      onLoadJson={handleLoadJSON}
-      onLoadFromText={handleLoadFromText}
+      loadHint={loadHint}
+      onJsonInputChange={handleJsonChange}
+      onLoadFromText={tryLoad}
       onLoadExample={handleLoadExample}
       user={user}
       onOpenLogin={onOpenLogin}

@@ -18,9 +18,9 @@ import type { User } from '../../types/user';
 interface LandingTemplateProps {
   jsonInput: string;
   loading: boolean;
+  /** Inline message shown when input was provided but isn't a valid roster. */
+  loadHint: string | null;
   onJsonInputChange: (text: string) => void;
-  /** Load whatever is currently in the paste box. */
-  onLoadJson: () => void;
   /** Load explicit roster text (from a dropped or browsed file). */
   onLoadFromText: (text: string) => void;
   onLoadExample: () => void;
@@ -77,8 +77,8 @@ const FEATURES: { glyph: string; title: string; blurb: string }[] = [
 export default function LandingTemplate({
   jsonInput,
   loading,
+  loadHint,
   onJsonInputChange,
-  onLoadJson,
   onLoadFromText,
   onLoadExample,
   user,
@@ -150,13 +150,13 @@ export default function LandingTemplate({
               ref={dropRef}
               style={[styles.dropZone, dragActive && styles.dropZoneActive]}
             >
-              {isWeb && (
-                <Text style={[styles.dropHint, dragActive && styles.dropHintActive]}>
-                  {dragActive
-                    ? 'Drop your roster file to load'
-                    : '⬇  Drag a roster .json file here, or paste it below'}
-                </Text>
-              )}
+              <Text style={[styles.dropHint, dragActive && styles.dropHintActive]}>
+                {dragActive
+                  ? 'Drop your roster file to load'
+                  : isWeb
+                  ? '⬇  Drag a roster .json here, paste it, or Browse — it loads automatically'
+                  : 'Paste your roster JSON — it loads automatically'}
+              </Text>
               <TextInput
                 style={[
                   styles.input,
@@ -192,13 +192,7 @@ export default function LandingTemplate({
               </View>
             </View>
 
-            <Button
-              label={loading ? 'Loading...' : 'Load Abilities'}
-              onPress={onLoadJson}
-              disabled={loading}
-              variant="primary"
-              style={styles.loadButton}
-            />
+            {loadHint ? <Text style={styles.loadHint}>{loadHint}</Text> : null}
 
             {/* Feature showcase — reflows 1 / 2 / 3 columns by breakpoint. */}
             <Text
@@ -300,12 +294,18 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 12,
   },
-  loadButton: {
-    marginBottom: 28,
+  loadHint: {
+    color: '#E6B566',
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 19,
+    marginTop: -4,
+    marginBottom: 4,
   },
   sectionHeading: {
     color: colors.textPrimary,
     fontWeight: '800',
+    marginTop: 12,
     marginBottom: 12,
   },
   featureGrid: {
