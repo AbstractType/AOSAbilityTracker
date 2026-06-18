@@ -22,11 +22,30 @@ export interface AbilityUsageStat {
   count: number;
 }
 
+export interface PhaseTimeStat {
+  phase: string;
+  totalMs: number;
+  segments: number;
+}
+
 export interface UsageStats {
   gamesPlayed: number;
   mostUsed: AbilityUsageStat[];
   neverUsed: { abilityKey: string; name: string; source: string }[];
+  timePerPhase: PhaseTimeStat[];
 }
+
+// Canonical phase order for sorting the time-per-phase breakdown.
+const PHASE_ORDER = [
+  'Deployment Phase',
+  'Start of Turn',
+  'Hero Phase',
+  'Movement Phase',
+  'Shooting Phase',
+  'Charge Phase',
+  'Combat Phase',
+  'End of Turn',
+];
 
 /** Split an abilityKey (`name|source`) back into its parts. */
 function splitKey(key: string): { name: string; source: string } {
@@ -41,7 +60,7 @@ async function currentUserId(): Promise<string | null> {
 }
 
 export async function getUsageStats(savedArmies: SavedArmy[]): Promise<UsageStats> {
-  const empty: UsageStats = { gamesPlayed: 0, mostUsed: [], neverUsed: [] };
+  const empty: UsageStats = { gamesPlayed: 0, mostUsed: [], neverUsed: [], timePerPhase: [] };
   const userId = await currentUserId();
   if (!userId) return empty;
 
@@ -91,5 +110,29 @@ export async function getUsageStats(savedArmies: SavedArmy[]): Promise<UsageStat
     .map(([k, v]) => ({ abilityKey: k, name: v.name, source: v.source }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return { gamesPlayed, mostUsed, neverUsed };
+  // Time per phase — sum your logged phase segments across all rooms.
+  const { data: logRows, error: logErr } = await supabase
+    .from('war_room_phase_log')
+    .select('phase, duration_ms')
+    .eq('player_id', userId);
+  if (logErr) {
+    // eslint-disable-next-line no-console
+    console.error('[stats] phase log fetch failed:', logErr.message);
+  }
+  const phaseTimes = new Map<string, { totalMs: number; segments: number }>();
+  for (const r of (logRows ?? []) as { phase: string; duration_ms: number }[]) {
+    const cur = phaseTimes.get(r.phase) ?? { totalMs: 0, segments: 0 };
+    cur.totalMs += r.duration_ms;
+    cur.segments += 1;
+    phaseTimes.set(r.phase, cur);
+  }
+  const timePerPhase: PhaseTimeStat[] = [...phaseTimes.entries()]
+    .map(([phase, v]) => ({ phase, totalMs: v.totalMs, segments: v.segments }))
+    .sort((a, b) => {
+      const ia = PHASE_ORDER.indexOf(a.phase);
+      const ib = PHASE_ORDER.indexOf(b.phase);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    });
+
+  return { gamesPlayed, mostUsed, neverUsed, timePerPhase };
 }

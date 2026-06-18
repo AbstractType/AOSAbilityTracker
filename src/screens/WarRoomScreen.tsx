@@ -17,6 +17,13 @@ import {
   stateKey,
   type RoomStateRow,
 } from '../utils/warRoomState';
+import {
+  initClock,
+  advancePhase,
+  passTurn,
+  CLOCK_PHASES,
+  type ClockState,
+} from '../utils/warRoomClock';
 import AbilityCard from '../components/organisms/AbilityCard';
 import PhaseSelector from '../components/organisms/PhaseSelector';
 import { colors, radii } from '../theme/tokens';
@@ -131,13 +138,33 @@ export default function WarRoomScreen({
   // Channel handle so the Leave button can broadcast before tearing down.
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-  // Local view controls.
   const [side, setSide] = useState<Side>('mine'); // narrow-screen tab
-  const [selectedPhase, setSelectedPhase] = useState<Phase | null>(null);
-  const [myTurn, setMyTurn] = useState(true); // local: is it my turn?
 
-  const myRole: TurnRole = myTurn ? 'active' : 'inactive';
-  const oppRole: TurnRole = myTurn ? 'inactive' : 'active';
+  // Shared game clock (stored on war_rooms, synced via Realtime). Initialized
+  // from the room prop; kept current by the subscription below.
+  const [clock, setClock] = useState({
+    activePlayerId: room.activePlayerId,
+    currentPhase: room.currentPhase as Phase | null,
+    turnNumber: room.turnNumber,
+    phaseStartedAt: room.phaseStartedAt,
+  });
+  const [advancing, setAdvancing] = useState(false);
+  const [clockError, setClockError] = useState<string | null>(null);
+
+  // Whose turn — from the shared clock. Before it's initialized, treat player1
+  // (the challenger) as active so the view is sensible.
+  const isMyTurn = clock.activePlayerId ? clock.activePlayerId === myId : iAmPlayer1;
+  const myRole: TurnRole = isMyTurn ? 'active' : 'inactive';
+  const oppRole: TurnRole = isMyTurn ? 'inactive' : 'active';
+
+  // The phase being viewed — defaults to (and follows) the clock's current
+  // phase, but you can tap a chip to browse another phase locally.
+  const [viewPhase, setViewPhase] = useState<Phase | null>(
+    (room.currentPhase as Phase) ?? null
+  );
+  useEffect(() => {
+    setViewPhase((clock.currentPhase as Phase) ?? null);
+  }, [clock.currentPhase]);
 
   // ---- Realtime: state sync + presence (unchanged from Phase 3) ----
   useEffect(() => {
@@ -181,6 +208,28 @@ export default function WarRoomScreen({
           });
         }
       )
+      // Shared clock changes (whose turn / current phase / turn number).
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'war_rooms',
+          filter: `id=eq.${room.id}`,
+        },
+        (payload) => {
+          const r = payload.new as any;
+          if (cancelled) return;
+          setClock({
+            activePlayerId: r.active_player_id ?? null,
+            currentPhase: (r.current_phase ?? null) as Phase | null,
+            turnNumber: r.turn_number ?? 1,
+            phaseStartedAt: r.phase_started_at
+              ? new Date(r.phase_started_at).getTime()
+              : Date.now(),
+          });
+        }
+      )
       .on('presence', { event: 'sync' }, () => {
         const presences = Object.values(channel.presenceState()).flat() as any[];
         setOpponentOnline(presences.some((p) => p.user_id === oppId));
@@ -194,6 +243,10 @@ export default function WarRoomScreen({
           const rows = await getRoomState(room.id);
           applyRows(rows);
           await channel.track({ user_id: myId });
+          // Initialize the clock if no one has yet (conditional — first wins).
+          if (!room.activePlayerId) {
+            await initClock(room.id, room.player1Id);
+          }
         }
       });
 
@@ -232,6 +285,48 @@ export default function WarRoomScreen({
     onLeave();
   }
 
+  // ---- Clock controls (either player may advance the shared clock) ----
+  function currentClockState(): ClockState | null {
+    if (!clock.activePlayerId || !clock.currentPhase) return null;
+    return {
+      roomId: room.id,
+      activePlayerId: clock.activePlayerId,
+      currentPhase: clock.currentPhase,
+      turnNumber: clock.turnNumber,
+      phaseStartedAt: clock.phaseStartedAt,
+    };
+  }
+
+  async function handleNextPhase() {
+    const c = currentClockState();
+    if (!c || advancing) return;
+    setAdvancing(true);
+    setClockError(null);
+    try {
+      await advancePhase(c); // realtime echo updates local clock
+    } catch (err) {
+      setClockError(err instanceof Error ? err.message : 'Could not advance the phase.');
+    } finally {
+      setAdvancing(false);
+    }
+  }
+
+  async function handlePassTurn() {
+    const c = currentClockState();
+    if (!c || !oppId || advancing) return;
+    setAdvancing(true);
+    setClockError(null);
+    try {
+      await passTurn(c, oppId);
+    } catch (err) {
+      setClockError(err instanceof Error ? err.message : 'Could not pass the turn.');
+    } finally {
+      setAdvancing(false);
+    }
+  }
+
+  const atLastPhase = clock.currentPhase === CLOCK_PHASES[CLOCK_PHASES.length - 1];
+
   async function toggleMine(key: string) {
     const cur = usedMap.get(stateKey(myId, key)) ?? false;
     const nextUsed = !cur;
@@ -255,12 +350,12 @@ export default function WarRoomScreen({
 
   // Role-filtered, phase-filtered ability lists per column.
   const myColumn = useMemo(
-    () => abilitiesForRole(myAbilities, myRole, selectedPhase),
-    [myAbilities, myRole, selectedPhase]
+    () => abilitiesForRole(myAbilities, myRole, viewPhase),
+    [myAbilities, myRole, viewPhase]
   );
   const oppColumn = useMemo(
-    () => abilitiesForRole(oppAbilities, oppRole, selectedPhase),
-    [oppAbilities, oppRole, selectedPhase]
+    () => abilitiesForRole(oppAbilities, oppRole, viewPhase),
+    [oppAbilities, oppRole, viewPhase]
   );
 
   function renderColumn(
@@ -295,7 +390,7 @@ export default function WarRoomScreen({
         {sections.length === 0 ? (
           <Text style={styles.empty}>
             Nothing usable {role === 'active' ? 'this turn' : 'on the opponent’s turn'}
-            {selectedPhase ? ' in this phase' : ''}.
+            {viewPhase ? ' in this phase' : ''}.
           </Text>
         ) : (
           sections.map((section) => (
@@ -356,37 +451,51 @@ export default function WarRoomScreen({
         </View>
       ) : null}
 
-      {/* Controls: whose turn + phase selector */}
+      {/* Shared game clock + phase selector */}
       <View style={[styles.controls, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
-        <View style={styles.turnRow}>
-          <Text style={styles.turnLabel}>Whose turn:</Text>
-          <View style={styles.turnToggle}>
-            <TouchableOpacity
-              style={[styles.turnBtn, myTurn && styles.turnBtnActive]}
-              onPress={() => setMyTurn(true)}
-              activeOpacity={0.7}
+        <View style={styles.clockRow}>
+          <View style={styles.clockInfo}>
+            <Text style={styles.clockTurn}>Turn {clock.turnNumber}</Text>
+            <Text
+              style={[styles.clockWho, isMyTurn ? styles.clockWhoMine : styles.clockWhoOpp]}
+              numberOfLines={1}
             >
-              <Text style={[styles.turnBtnText, myTurn && styles.turnBtnTextActive]}>Yours</Text>
+              {isMyTurn ? 'Your turn' : `${oppTitle}'s turn`}
+            </Text>
+            {clock.currentPhase ? (
+              <Text style={styles.clockPhase} numberOfLines={1}>
+                · {clock.currentPhase}
+              </Text>
+            ) : null}
+          </View>
+          <View style={styles.clockBtns}>
+            <TouchableOpacity
+              style={[styles.clockBtn, (atLastPhase || advancing) && styles.clockBtnDisabled]}
+              onPress={handleNextPhase}
+              disabled={atLastPhase || advancing}
+              activeOpacity={0.8}
+              accessibilityLabel="Next phase"
+            >
+              <Text style={styles.clockBtnText}>Next phase →</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.turnBtn, !myTurn && styles.turnBtnActive]}
-              onPress={() => setMyTurn(false)}
-              activeOpacity={0.7}
+              style={[styles.clockBtn, styles.clockBtnAlt, advancing && styles.clockBtnDisabled]}
+              onPress={handlePassTurn}
+              disabled={advancing}
+              activeOpacity={0.8}
+              accessibilityLabel="Pass turn"
             >
-              <Text style={[styles.turnBtnText, !myTurn && styles.turnBtnTextActive]}>
-                {oppTitle}
-              </Text>
+              <Text style={styles.clockBtnText}>Pass turn ⇄</Text>
             </TouchableOpacity>
           </View>
         </View>
+        {clockError ? <Text style={styles.errorText}>{clockError}</Text> : null}
 
         <PhaseSelector
           phases={PHASES}
-          activePhase={selectedPhase}
+          activePhase={viewPhase}
           isPhaseSelectable={() => true}
-          onPhasePress={(phase) =>
-            setSelectedPhase((p) => (p === phase ? null : phase))
-          }
+          onPhasePress={(phase) => setViewPhase((p) => (p === phase ? null : phase))}
         />
 
         {syncError ? <Text style={styles.errorText}>{syncError}</Text> : null}
@@ -512,39 +621,62 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingBottom: 8,
   },
-  turnRow: {
+  clockRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginBottom: 4,
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 6,
   },
-  turnLabel: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  turnToggle: {
+  clockInfo: {
     flexDirection: 'row',
-    backgroundColor: '#101725',
-    borderRadius: radii.md,
-    padding: 3,
+    alignItems: 'baseline',
+    gap: 8,
     flexShrink: 1,
+    minWidth: 0,
   },
-  turnBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: radii.sm,
+  clockTurn: {
+    color: colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '800',
   },
-  turnBtnActive: {
-    backgroundColor: '#3F66D6',
+  clockWho: {
+    fontSize: 13,
+    fontWeight: '700',
   },
-  turnBtnText: {
+  clockWhoMine: {
+    color: '#4ADE80',
+  },
+  clockWhoOpp: {
+    color: '#9DBDFF',
+  },
+  clockPhase: {
     color: colors.textSecondary,
     fontSize: 13,
-    fontWeight: '600',
+    flexShrink: 1,
+    minWidth: 0,
   },
-  turnBtnTextActive: {
+  clockBtns: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  clockBtn: {
+    backgroundColor: '#3F66D6',
+    borderRadius: radii.md,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  clockBtnAlt: {
+    backgroundColor: '#4C5775',
+  },
+  clockBtnDisabled: {
+    opacity: 0.45,
+  },
+  clockBtnText: {
     color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
   },
   tabsWrap: {
     width: '100%',

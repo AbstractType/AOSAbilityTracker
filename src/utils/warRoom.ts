@@ -15,6 +15,11 @@ export interface WarRoomRow {
   player2_army_json: string | null;
   status: string;
   created_at: string;
+  // Clock columns (added in migration 0006; may be absent on older rows).
+  active_player_id?: string | null;
+  current_phase?: string | null;
+  turn_number?: number | null;
+  phase_started_at?: string | null;
 }
 
 export function rowToWarRoom(row: WarRoomRow): WarRoom {
@@ -26,6 +31,12 @@ export function rowToWarRoom(row: WarRoomRow): WarRoom {
     player2ArmyJson: row.player2_army_json,
     status: row.status,
     createdAt: new Date(row.created_at).getTime(),
+    activePlayerId: row.active_player_id ?? null,
+    currentPhase: row.current_phase ?? null,
+    turnNumber: row.turn_number ?? 1,
+    phaseStartedAt: row.phase_started_at
+      ? new Date(row.phase_started_at).getTime()
+      : Date.now(),
   };
 }
 

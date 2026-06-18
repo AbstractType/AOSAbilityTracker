@@ -13,11 +13,18 @@ interface StatsScreenProps {
 
 const TOP_N = 12;
 
+/** Format a duration (ms) as "Xm Ys" (or "Ys" under a minute). */
+function formatDuration(ms: number): string {
+  const total = Math.round(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m === 0 ? `${s}s` : `${m}m ${s}s`;
+}
+
 /**
- * StatsScreen — war-room usage analytics across all your games: most-used
- * abilities and abilities you field but have never used. (Time-per-phase is
- * intentionally not here yet — it needs a turn/phase clock the room doesn't
- * have.)
+ * StatsScreen — war-room analytics across all your games: time spent per phase
+ * (from the synced game clock's phase log), most-used abilities, and abilities
+ * you field but have never used.
  */
 export default function StatsScreen({ savedArmies, onBack }: StatsScreenProps) {
   const { width, select } = useResponsive();
@@ -69,6 +76,27 @@ export default function StatsScreen({ savedArmies, onBack }: StatsScreenProps) {
                 war room{(stats?.gamesPlayed ?? 0) === 1 ? '' : 's'} played
               </Text>
             </View>
+
+            {/* Time per phase */}
+            {stats && stats.timePerPhase.length > 0 ? (
+              <>
+                <Text style={styles.sectionTitle}>Time per phase</Text>
+                <Text style={styles.sectionHint}>
+                  Total time you spent in each phase on your turns, across all games.
+                </Text>
+                {stats.timePerPhase.map((p) => (
+                  <View key={p.phase} style={styles.row}>
+                    <View style={styles.rowText}>
+                      <Text style={styles.abilityName} numberOfLines={1}>
+                        {p.phase}
+                      </Text>
+                    </View>
+                    <Text style={styles.countBadge}>{formatDuration(p.totalMs)}</Text>
+                  </View>
+                ))}
+                <View style={{ height: 28 }} />
+              </>
+            ) : null}
 
             {/* Most used */}
             <Text style={styles.sectionTitle}>Most-used abilities</Text>

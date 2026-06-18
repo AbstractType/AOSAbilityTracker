@@ -36,4 +36,13 @@ export interface WarRoom {
   player2ArmyJson: string | null;
   status: string;
   createdAt: number;
+  // ----- Synced game clock -----
+  /** Whose turn it is. Null until the clock is initialized. */
+  activePlayerId: string | null;
+  /** Current game phase (a Phase string), or null before the game starts. */
+  currentPhase: string | null;
+  /** Turn counter, incremented each time the turn passes. */
+  turnNumber: number;
+  /** When the current phase segment began (epoch ms) — for timing. */
+  phaseStartedAt: number;
 }
