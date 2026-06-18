@@ -44,7 +44,9 @@ export function registerPwa(): void {
   // Manifest + theming.
   addLinkOnce('manifest', `${BASE}manifest.webmanifest`);
   addLinkOnce('icon', `${BASE}icon.svg`, { type: 'image/svg+xml' });
-  addLinkOnce('apple-touch-icon', `${BASE}icon.svg`);
+  // iOS Safari does NOT support SVG for the home-screen icon — point it at a
+  // PNG so "Add to Home Screen" renders something instead of a blank tile.
+  addLinkOnce('apple-touch-icon', `${BASE}apple-touch-icon.png`);
   addMetaOnce('theme-color', THEME);
   addMetaOnce('apple-mobile-web-app-capable', 'yes');
   addMetaOnce('apple-mobile-web-app-status-bar-style', 'black-translucent');

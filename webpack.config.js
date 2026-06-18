@@ -44,15 +44,13 @@ module.exports = async function (env, argv) {
     config.output.publicPath = GITHUB_PAGES_BASE;
   }
 
-  // Copy the PWA static files (manifest, icon, service worker) to the build
+  // Copy the PWA static files (manifest, icons, service worker) to the build
   // root so they sit alongside index.html and are served at the app's base.
+  // We copy the whole web/ directory, so adding an asset there (e.g. a new
+  // icon size) ships automatically without touching this config.
   config.plugins.push(
     new CopyWebpackPlugin({
-      patterns: [
-        { from: path.resolve(__dirname, 'web/manifest.webmanifest'), to: 'manifest.webmanifest' },
-        { from: path.resolve(__dirname, 'web/service-worker.js'), to: 'service-worker.js' },
-        { from: path.resolve(__dirname, 'web/icon.svg'), to: 'icon.svg' },
-      ],
+      patterns: [{ from: path.resolve(__dirname, 'web'), to: '.' }],
     })
   );
 
