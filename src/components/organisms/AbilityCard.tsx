@@ -30,6 +30,13 @@ interface AbilityCardProps {
    * NOT control visibility itself.
    */
   hidden?: boolean;
+  /**
+   * True when every unit that is this ability's source has been destroyed —
+   * the ability can't be used, so the card is faded with a struck-through name
+   * and a "source destroyed" label. Purely a visual marker; the card stays
+   * tappable.
+   */
+  sourceDestroyed?: boolean;
 }
 
 /**
@@ -47,6 +54,7 @@ export default function AbilityCard({
   onLongPress,
   note,
   hidden,
+  sourceDestroyed,
 }: AbilityCardProps) {
   const { scaleFont, select } = useResponsive();
 
@@ -62,6 +70,7 @@ export default function AbilityCard({
         { borderColor: colors.phaseBorder[ability.phase] },
         ability.used && styles.cardUsed,
         hidden && styles.cardHidden,
+        sourceDestroyed && styles.cardUnusable,
       ]}
       onPress={onToggleUsed}
       onLongPress={onLongPress}
@@ -117,6 +126,9 @@ export default function AbilityCard({
             },
           ]}
         >
+          {sourceDestroyed ? (
+            <Text style={styles.unusableLabel}>✕ SOURCE DESTROYED — UNUSABLE</Text>
+          ) : null}
           {ability.source ? (
             <Text
               style={[
@@ -134,6 +146,7 @@ export default function AbilityCard({
                 fontSize: scaleFont(select({ mobile: 16, default: 18 })),
                 paddingRight: select({ mobile: 60, default: 80 }),
               },
+              sourceDestroyed && styles.nameStruck,
             ]}
           >
             {ability.name.toUpperCase()}
@@ -209,6 +222,10 @@ const styles = StyleSheet.create({
     // happens with the Show Hidden toggle on). Stacks with cardUsed.
     opacity: 0.55,
   },
+  cardUnusable: {
+    // Faded when the ability's source unit has been destroyed.
+    opacity: 0.6,
+  },
   wrapper: {
     position: 'relative',
   },
@@ -251,6 +268,16 @@ const styles = StyleSheet.create({
     color: colors.textCardPrimary,
     letterSpacing: 0.5,
     marginBottom: 8,
+  },
+  nameStruck: {
+    textDecorationLine: 'line-through',
+  },
+  unusableLabel: {
+    color: '#9E1B1B',
+    fontSize: 10.5,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    marginBottom: 5,
   },
 
   // ---- User-written notes section ----

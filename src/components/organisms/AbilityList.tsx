@@ -36,6 +36,12 @@ interface AbilityListProps {
    * it scrolls beneath the pinned casters row.
    */
   header?: React.ReactElement | null;
+  /**
+   * Names of source units that are fully destroyed. An ability whose `source`
+   * is in this set is rendered as unusable. Passed as the FlatList `extraData`
+   * so rows re-render when a unit is destroyed/revived.
+   */
+  destroyedSources?: Set<string>;
 }
 
 /**
@@ -60,6 +66,7 @@ export default function AbilityList({
   horizontalPadding,
   cardColumns = 1,
   header,
+  destroyedSources,
 }: AbilityListProps) {
   return (
     <FlatList
@@ -67,6 +74,7 @@ export default function AbilityList({
       keyExtractor={section => section.phase}
       style={styles.list}
       ListHeaderComponent={header ?? null}
+      extraData={destroyedSources}
       contentContainerStyle={[
         styles.content,
         { maxWidth: contentMaxWidth, alignSelf: 'center', width: '100%' },
@@ -93,6 +101,9 @@ export default function AbilityList({
                         }
                         note={custom?.note}
                         hidden={custom?.hidden}
+                        sourceDestroyed={
+                          !!ability.source && !!destroyedSources?.has(ability.source)
+                        }
                       />
                     );
                   })}

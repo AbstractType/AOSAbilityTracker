@@ -1,7 +1,8 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import type { Unit, UnitState } from '../../types/unit';
 import { distributeIntoColumns } from '../../utils/masonry';
+import { radii } from '../../theme/tokens';
 import UnitCard from './UnitCard';
 
 interface UnitSectionProps {
@@ -31,30 +32,55 @@ export default function UnitSection({
   horizontalPadding,
   cardColumns,
 }: UnitSectionProps) {
+  // Collapsed by default so the units are available on demand without crowding
+  // the ability tracker. Local state persists across re-renders (the header
+  // element keeps its instance); it resets when a new army loads.
+  const [collapsed, setCollapsed] = useState(true);
+
   if (units.length === 0) return null;
+
+  const destroyedCount = units.reduce(
+    (n, u) => n + (unitStates.get(u.id)?.destroyed ? 1 : 0),
+    0
+  );
 
   return (
     <View style={[styles.section, { paddingHorizontal: horizontalPadding }]}>
-      <Text style={styles.heading}>Units ({units.length})</Text>
-      <View style={styles.masonryGrid}>
-        {distributeIntoColumns(units, cardColumns).map((columnItems, colIdx) => (
-          <View key={colIdx} style={styles.masonryColumn}>
-            {columnItems.map((unit) => {
-              const state = unitStates.get(unit.id) ?? EMPTY_STATE;
-              return (
-                <UnitCard
-                  key={unit.id}
-                  unit={unit}
-                  wounds={state.wounds}
-                  destroyed={state.destroyed}
-                  onWoundsChange={(delta) => onUnitWoundsChange(unit.id, delta)}
-                  onToggleDestroyed={() => onToggleUnitDestroyed(unit.id)}
-                />
-              );
-            })}
-          </View>
-        ))}
-      </View>
+      <TouchableOpacity
+        style={styles.headerBar}
+        onPress={() => setCollapsed((c) => !c)}
+        activeOpacity={0.75}
+        accessibilityRole="button"
+      >
+        <Text style={styles.chevron}>{collapsed ? '▸' : '▾'}</Text>
+        <Text style={styles.heading}>Units ({units.length})</Text>
+        {destroyedCount > 0 && (
+          <Text style={styles.destroyedCount}>{destroyedCount} destroyed</Text>
+        )}
+        <Text style={styles.toggleHint}>{collapsed ? 'Show' : 'Hide'}</Text>
+      </TouchableOpacity>
+
+      {!collapsed && (
+        <View style={styles.masonryGrid}>
+          {distributeIntoColumns(units, cardColumns).map((columnItems, colIdx) => (
+            <View key={colIdx} style={styles.masonryColumn}>
+              {columnItems.map((unit) => {
+                const state = unitStates.get(unit.id) ?? EMPTY_STATE;
+                return (
+                  <UnitCard
+                    key={unit.id}
+                    unit={unit}
+                    wounds={state.wounds}
+                    destroyed={state.destroyed}
+                    onWoundsChange={(delta) => onUnitWoundsChange(unit.id, delta)}
+                    onToggleDestroyed={() => onToggleUnitDestroyed(unit.id)}
+                  />
+                );
+              })}
+            </View>
+          ))}
+        </View>
+      )}
     </View>
   );
 }
@@ -64,12 +90,38 @@ const styles = StyleSheet.create({
     marginTop: 16,
     width: '100%',
   },
+  headerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#15203A',
+    borderRadius: radii.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  chevron: {
+    color: '#9DB0CF',
+    fontSize: 13,
+    fontWeight: '900',
+    width: 12,
+  },
   heading: {
     color: '#E9F0FF',
     fontSize: 16,
     fontWeight: '800',
     letterSpacing: 0.3,
-    marginBottom: 10,
+  },
+  destroyedCount: {
+    color: '#FF8B8B',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  toggleHint: {
+    color: '#9DB0CF',
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 'auto',
   },
   masonryGrid: {
     flexDirection: 'row',

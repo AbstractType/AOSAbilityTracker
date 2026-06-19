@@ -366,6 +366,25 @@ export default function AbilityTrackerScreen({
     }
   }
 
+  // Source-unit names that are *fully* destroyed: every unit sharing that name
+  // is destroyed. An ability whose `source` matches is then marked unusable. We
+  // require ALL same-named units to be down so a duplicate unit (e.g. two of the
+  // same warscroll) keeps the shared ability usable while one survives.
+  const destroyedSources = useMemo(() => {
+    const tally = new Map<string, { total: number; destroyed: number }>();
+    for (const u of units) {
+      const rec = tally.get(u.name) ?? { total: 0, destroyed: 0 };
+      rec.total += 1;
+      if (unitStates.get(u.id)?.destroyed) rec.destroyed += 1;
+      tally.set(u.name, rec);
+    }
+    const set = new Set<string>();
+    tally.forEach((rec, name) => {
+      if (rec.total > 0 && rec.destroyed === rec.total) set.add(name);
+    });
+    return set;
+  }, [units, unitStates]);
+
   const noteEditCustomization = noteEditAbility
     ? customizations.get(keyForAbility(noteEditAbility))
     : undefined;
@@ -380,6 +399,7 @@ export default function AbilityTrackerScreen({
         unitStates={unitStates}
         onUnitWoundsChange={adjustUnitWounds}
         onToggleUnitDestroyed={toggleUnitDestroyed}
+        destroyedSources={destroyedSources}
         visiblePhases={visiblePhases}
         activePhase={activePhase}
         displaySections={displaySections}

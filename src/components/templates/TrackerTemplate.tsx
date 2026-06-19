@@ -30,6 +30,8 @@ interface TrackerTemplateProps {
   unitStates: Map<string, UnitState>;
   onUnitWoundsChange: (unitId: string, delta: number) => void;
   onToggleUnitDestroyed: (unitId: string) => void;
+  /** Source-unit names that are fully destroyed (drives the "unusable" marker). */
+  destroyedSources: Set<string>;
   visiblePhases: Phase[];
   activePhase: Phase | null;
   displaySections: PhaseSection[];
@@ -203,6 +205,7 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
           contentMaxWidth={contentMaxWidth}
           horizontalPadding={horizontalPadding}
           cardColumns={cardColumns}
+          destroyedSources={props.destroyedSources}
           header={
             props.units.length > 0 ? (
               <UnitSection
