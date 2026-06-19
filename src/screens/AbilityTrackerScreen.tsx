@@ -214,6 +214,24 @@ export default function AbilityTrackerScreen({
     return filteredAbilities.filter(a => !customizations.get(keyForAbility(a))?.hidden);
   }, [filteredAbilities, customizations, showHidden]);
 
+  // Lore gating: a spell-lore ability needs a living wizard; a prayer-lore
+  // ability needs a living priest. When every relevant caster is destroyed (or
+  // the army never had one), those lore abilities can't be used, so drop them
+  // entirely. Warscroll spells/prayers (sourced to a specific unit) are left to
+  // the per-unit "source destroyed" marking instead — only lore-sourced ones
+  // (source isn't a unit name) are gated here.
+  const castableAbilities = useMemo(() => {
+    const unitNames = new Set(units.map(u => u.name));
+    const livingWizard = units.some(u => u.isWizard && !unitStates.get(u.id)?.destroyed);
+    const livingPriest = units.some(u => u.isPriest && !unitStates.get(u.id)?.destroyed);
+    return visibleAbilities.filter(a => {
+      const loreSourced = !!a.source && !unitNames.has(a.source);
+      if (loreSourced && a.isSpell && !livingWizard) return false;
+      if (loreSourced && a.isPrayer && !livingPriest) return false;
+      return true;
+    });
+  }, [visibleAbilities, units, unitStates]);
+
   // Group (filtered + hide-filtered) abilities by phase. Custom-ordered
   // abilities come first (lowest sortOrder), then the rest in natural
   // priority order.
@@ -221,7 +239,7 @@ export default function AbilityTrackerScreen({
     () =>
       visiblePhases.map(phase => ({
         phase,
-        items: visibleAbilities
+        items: castableAbilities
           .filter(a => a.phase === phase)
           .sort((a, b) => {
             const aOrder = customizations.get(keyForAbility(a))?.sortOrder ?? Number.MAX_SAFE_INTEGER;
@@ -230,7 +248,7 @@ export default function AbilityTrackerScreen({
             return getAbilitySortPriority(a) - getAbilitySortPriority(b);
           }),
       })),
-    [visibleAbilities, visiblePhases, customizations]
+    [castableAbilities, visiblePhases, customizations]
   );
 
   // When searching, hide phase sections with no matches so the user isn't

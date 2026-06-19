@@ -473,13 +473,16 @@ function parseAbility(profile: AbilityProfile, id: string, source?: string): Abi
   const isPassive = profile.typeName === 'Ability (Passive)';
   const isSpell = profile.typeName === 'Ability (Spell)';
   const isCommand = profile.typeName === 'Ability (Command)';
+  // Prayers are chanted by priests; tolerant match since exporters vary
+  // ("Ability (Prayer)" etc.).
+  const isPrayer = (profile.typeName ?? '').toLowerCase().includes('prayer');
 
   if (timing) {
     phase = mapTimingToPhase(timing);
   } else if (isPassive) {
     // Passives use the Color attribute to indicate their associated phase
     phase = mapColorToPhase(colorText) || 'Hero Phase';
-  } else if (isSpell || isCommand) {
+  } else if (isSpell || isCommand || isPrayer) {
     phase = 'Hero Phase';
   }
 
@@ -498,6 +501,7 @@ function parseAbility(profile: AbilityProfile, id: string, source?: string): Abi
     keyword,
     isPassive,
     isSpell,
+    isPrayer,
     castingValue,
     isCommand,
     commandCost,

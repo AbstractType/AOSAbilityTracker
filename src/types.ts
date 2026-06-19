@@ -18,6 +18,7 @@ export type Ability = {
   isPassive: boolean;
   source?: string;
   isSpell?: boolean;
+  isPrayer?: boolean;
   castingValue?: number;
   isCommand?: boolean;
   commandCost?: number;
