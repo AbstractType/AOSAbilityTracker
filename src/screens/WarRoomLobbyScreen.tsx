@@ -35,6 +35,12 @@ interface WarRoomLobbyScreenProps {
   userId: string;
   /** Back to the previous screen. */
   onBack: () => void;
+  /**
+   * Enter a war room. Called when a challenge we sent this session is accepted
+   * — detected by polling, so the challenger reliably joins even if the
+   * realtime UPDATE that App also listens for never arrives.
+   */
+  onEnterRoom: (roomId: string, opponentLabel?: string) => void;
 }
 
 /**
@@ -48,6 +54,7 @@ export default function WarRoomLobbyScreen({
   savedArmies,
   userId,
   onBack,
+  onEnterRoom,
 }: WarRoomLobbyScreenProps) {
   const { width, select } = useResponsive();
   const contentMaxWidth = Math.min(getContentMaxWidth(width), 640);
@@ -59,6 +66,11 @@ export default function WarRoomLobbyScreen({
   const [searching, setSearching] = useState(false);
   const [opponent, setOpponent] = useState<Profile | null>(null);
   const searchSeq = useRef(0);
+
+  // Challenges sent THIS session (id → opponent label, if known), so the poll
+  // below can pull us into the room the moment one is accepted — independent of
+  // the best-effort realtime UPDATE the App also listens for.
+  const sentChallenges = useRef<Map<string, string | undefined>>(new Map());
 
   // Army selection + send
   const [selectedArmyId, setSelectedArmyId] = useState<string | null>(null);
@@ -85,6 +97,18 @@ export default function WarRoomLobbyScreen({
 
   async function refreshOutgoing() {
     const all = await getMyChallenges();
+    // Did a challenge we sent this session get accepted? Jump into the room.
+    // This is the reliable path in — the App's realtime listener is only a
+    // faster best-effort shortcut. Safe to call repeatedly: entering unmounts
+    // this screen (stopping the poll), and enterRoom is idempotent, so a
+    // transient getRoom miss simply retries on the next tick.
+    const accepted = all.find(
+      (c) => c.status === 'accepted' && c.roomId && sentChallenges.current.has(c.id)
+    );
+    if (accepted?.roomId) {
+      onEnterRoom(accepted.roomId, sentChallenges.current.get(accepted.id));
+      return;
+    }
     setOutgoingRaw(all.filter((c) => c.challengerId === userId && c.status === 'pending'));
   }
 
@@ -131,16 +155,18 @@ export default function WarRoomLobbyScreen({
 
   async function handleSend() {
     if (!opponent || !selectedArmy) return;
+    const oppUsername = opponent.username;
     setSending(true);
     setSendError(null);
     setSentNotice(null);
     try {
-      await createChallenge({
+      const ch = await createChallenge({
         opponentId: opponent.userId,
         challengerUsername: profile.username,
         armyJson: selectedArmy.json,
       });
-      setSentNotice(`Challenge sent to @${opponent.username}.`);
+      sentChallenges.current.set(ch.id, oppUsername);
+      setSentNotice(`Challenge sent to @${oppUsername}.`);
       setOpponent(null);
       setQuery('');
       setResults([]);
@@ -174,6 +200,7 @@ export default function WarRoomLobbyScreen({
         challengerUsername: profile.username,
         armyJson: selectedArmy.json,
       });
+      sentChallenges.current.set(challenge.id, undefined);
       setLinkUrl(buildInviteUrl(challenge.inviteToken));
       refreshOutgoing();
     } catch (err) {
@@ -194,11 +221,12 @@ export default function WarRoomLobbyScreen({
     setEmailError(null);
     setEmailNotice(null);
     try {
-      await createEmailChallenge({
+      const ch = await createEmailChallenge({
         challengerUsername: profile.username,
         opponentEmail: email,
         armyJson: selectedArmy.json,
       });
+      sentChallenges.current.set(ch.id, undefined);
       setEmailNotice(`Invite emailed to ${email}.`);
       setEmailInput('');
       refreshOutgoing();

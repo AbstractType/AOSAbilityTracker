@@ -480,6 +480,7 @@ export default function App() {
           savedArmies={savedArmies}
           userId={user.id}
           onBack={() => setCurrentScreen('landing')}
+          onEnterRoom={enterRoom}
         />
       ) : currentScreen === 'warroom' && currentRoom && user ? (
         <WarRoomScreen
