@@ -1,6 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Ability, Phase } from '../types';
 import type { Wizard, Priest } from '../utils/jsonParser';
+import type { Unit, UnitState } from '../types/unit';
+import { unitTotalWounds } from '../utils/units';
 import type { User } from '../types/user';
 import type { Customization } from '../types/customization';
 import { keyForAbility } from '../types/customization';
@@ -28,6 +30,7 @@ interface AbilityTrackerScreenProps {
   abilities: Ability[];
   wizards: Wizard[];
   priests: Priest[];
+  units: Unit[];
   onAbilitiesChange: (abilities: Ability[]) => void;
   onBack: () => void;
   /** Current signed-in user (drives the header user button + customization gate). */
@@ -63,6 +66,7 @@ export default function AbilityTrackerScreen({
   abilities: initialAbilities,
   wizards,
   priests,
+  units,
   onAbilitiesChange,
   onBack,
   user,
@@ -99,6 +103,57 @@ export default function AbilityTrackerScreen({
   const [reorderMode, setReorderMode] = useState(false);
   /** Inline error shown above the list if a drag commit fails to persist. */
   const [reorderError, setReorderError] = useState<string | null>(null);
+  /**
+   * Ephemeral per-unit combat state (wounds taken + destroyed), keyed by unit
+   * id. Pure game state — never persisted. It resets when a new army loads
+   * (App remounts this screen via `key`) and, unlike ability `used`, persists
+   * across turns (a wounded unit stays wounded).
+   */
+  const [unitStates, setUnitStates] = useState<Map<string, UnitState>>(new Map());
+
+  // Adjust a unit's wounds by ±1, clamped to its pool, keeping `destroyed` in
+  // sync with the pool when the unit is wound-trackable.
+  const adjustUnitWounds = useCallback(
+    (unitId: string, delta: number) => {
+      const unit = units.find((u) => u.id === unitId);
+      if (!unit) return;
+      const total = unitTotalWounds(unit);
+      setUnitStates((prev) => {
+        const next = new Map(prev);
+        const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+        const wounds =
+          total > 0
+            ? Math.max(0, Math.min(total, cur.wounds + delta))
+            : Math.max(0, cur.wounds + delta);
+        const destroyed = total > 0 ? wounds >= total : cur.destroyed;
+        next.set(unitId, { wounds, destroyed });
+        return next;
+      });
+    },
+    [units]
+  );
+
+  // Destroy ⇄ revive. Destroy fills the wound pool (if trackable); revive clears
+  // wounds and the flag.
+  const toggleUnitDestroyed = useCallback(
+    (unitId: string) => {
+      const unit = units.find((u) => u.id === unitId);
+      if (!unit) return;
+      const total = unitTotalWounds(unit);
+      setUnitStates((prev) => {
+        const next = new Map(prev);
+        const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+        next.set(
+          unitId,
+          cur.destroyed
+            ? { wounds: 0, destroyed: false }
+            : { wounds: total > 0 ? total : cur.wounds, destroyed: true }
+        );
+        return next;
+      });
+    },
+    [units]
+  );
 
   // Only verified users can customize (notes/hide/reorder), since everything
   // persists to their account. Signed-out / unverified users never see the
@@ -321,6 +376,10 @@ export default function AbilityTrackerScreen({
         abilities={abilities}
         wizards={wizards}
         priests={priests}
+        units={units}
+        unitStates={unitStates}
+        onUnitWoundsChange={adjustUnitWounds}
+        onToggleUnitDestroyed={toggleUnitDestroyed}
         visiblePhases={visiblePhases}
         activePhase={activePhase}
         displaySections={displaySections}

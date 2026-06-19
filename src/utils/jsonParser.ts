@@ -1,4 +1,5 @@
 import type { Ability, Phase } from '../types';
+import type { Unit, WeaponProfile } from '../types/unit';
 import { universalKeywords } from '../data/universalKeywords';
 import { universalCommands } from '../data/universalCommands';
 
@@ -16,6 +17,7 @@ export interface ParsedRosterData {
   abilities: Ability[];
   wizards: Wizard[];
   priests: Priest[];
+  units: Unit[];
 }
 
 interface AbilityProfile {
@@ -172,11 +174,202 @@ export function parseAbilitiesFromJSON(jsonString: string): ParsedRosterData {
       priestLevel,
     }));
 
-    return { abilities, wizards, priests };
+    const units = extractUnits(data);
+
+    return { abilities, wizards, priests, units };
   } catch (error) {
     console.error('Failed to parse JSON:', error);
-    return { abilities: [], wizards: [], priests: [] };
+    return { abilities: [], wizards: [], priests: [], units: [] };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Unit + weapon extraction
+//
+// Separate from extractAbilities() because units need a different shape: each
+// `type:"unit"` selection becomes ONE Unit (duplicates are distinct, so we
+// never dedupe by name), with its stat line from the unit's own `typeName:
+// "Unit"` profile and its weapons gathered from the whole subtree (weapons nest
+// under model child-selections, e.g. unit → model → upgrade → profiles[weapon]).
+// ---------------------------------------------------------------------------
+
+/** Walk the roster tree and build one Unit per `type:"unit"` selection. */
+function extractUnits(root: any): Unit[] {
+  const units: Unit[] = [];
+  let idCounter = 0;
+
+  function walk(node: any): void {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    if (node.type === 'unit') {
+      const unit = buildUnit(node, idCounter.toString());
+      if (unit) {
+        units.push(unit);
+        idCounter += 1;
+      }
+      // Units don't nest — buildUnit already mined this subtree, so stop here.
+      // Sibling selections are still handled by the caller's loop.
+      return;
+    }
+
+    for (const key in node) {
+      if (Object.prototype.hasOwnProperty.call(node, key)) {
+        walk(node[key]);
+      }
+    }
+  }
+
+  walk(root);
+  return units;
+}
+
+/** Read a characteristic's display text by trying several possible names. */
+function charByName(
+  characteristics: any[] | undefined,
+  aliases: string[]
+): string | undefined {
+  if (!Array.isArray(characteristics)) return undefined;
+  const ch = characteristics.find(
+    (c) => c && typeof c.name === 'string' && aliases.includes(c.name.toLowerCase().trim())
+  );
+  return ch && typeof ch.$text === 'string' ? ch.$text.trim() : undefined;
+}
+
+/** Parse a weapon profile (Melee/Ranged Weapon) into a WeaponProfile. */
+function parseWeapon(profile: any): WeaponProfile | null {
+  if (!profile || !profile.name) return null;
+  const ch = profile.characteristics;
+  const range = charByName(ch, ['rng', 'range']);
+  let ability = charByName(ch, ['ability', 'abilities', 'special']);
+  // BattleScribe uses "-" for "no weapon ability" — treat that as none.
+  if (ability === '-' || ability === '') ability = undefined;
+
+  const tn = typeof profile.typeName === 'string' ? profile.typeName.toLowerCase() : '';
+  const kind: 'melee' | 'ranged' = tn.includes('ranged')
+    ? 'ranged'
+    : tn.includes('melee')
+    ? 'melee'
+    : range
+    ? 'ranged'
+    : 'melee';
+
+  return {
+    name: profile.name,
+    kind,
+    range: kind === 'ranged' ? range : undefined,
+    attacks: charByName(ch, ['atk', 'attacks', 'a']) || '-',
+    hit: charByName(ch, ['hit', 'to hit']) || '-',
+    wound: charByName(ch, ['wnd', 'wound', 'to wound']) || '-',
+    rend: charByName(ch, ['rnd', 'rend']) || '-',
+    damage: charByName(ch, ['dmg', 'damage', 'd']) || '-',
+    ability,
+  };
+}
+
+/** Build a Unit from a `type:"unit"` selection node. */
+function buildUnit(selection: any, id: string): Unit | null {
+  const name: string | undefined = selection.name;
+  if (!name) return null;
+
+  // Stat line from the unit's own "Unit" profile.
+  let move: string | undefined;
+  let health: string | undefined;
+  let save: string | undefined;
+  let control: string | undefined;
+  const statProfile = (selection.profiles || []).find(
+    (p: any) => typeof p?.typeName === 'string' && p.typeName.trim().toLowerCase() === 'unit'
+  );
+  if (statProfile) {
+    move = charByName(statProfile.characteristics, ['move']);
+    health = charByName(statProfile.characteristics, ['health', 'wounds']);
+    save = charByName(statProfile.characteristics, ['save']);
+    control = charByName(statProfile.characteristics, ['control']);
+  }
+
+  // Weapons (deduped by name) + model count, gathered from the whole subtree.
+  const weapons: WeaponProfile[] = [];
+  const seenWeapons = new Set<string>();
+  let modelCount = 0;
+
+  function mine(node: any): void {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach(mine);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    if (Array.isArray(node.profiles)) {
+      for (const p of node.profiles) {
+        if (typeof p?.typeName === 'string' && /weapon/i.test(p.typeName)) {
+          const w = parseWeapon(p);
+          if (w && !seenWeapons.has(w.name)) {
+            seenWeapons.add(w.name);
+            weapons.push(w);
+          }
+        }
+      }
+    }
+
+    // Model count is the sum of the `type:"model"` selections' counts.
+    if (node !== selection && node.type === 'model') {
+      modelCount += typeof node.number === 'number' ? node.number : 1;
+    }
+
+    for (const key in node) {
+      // categories/costs never hold weapons or models — skip for speed/safety.
+      if (key === 'categories' || key === 'costs') continue;
+      if (Object.prototype.hasOwnProperty.call(node, key)) mine(node[key]);
+    }
+  }
+  mine(selection);
+
+  const models = modelCount > 0 ? modelCount : typeof selection.number === 'number' ? selection.number : 1;
+
+  // Points cost.
+  let points: number | undefined;
+  if (Array.isArray(selection.costs)) {
+    const pts = selection.costs.find((c: any) => c?.name === 'pts' || c?.typeId === 'points');
+    if (pts && typeof pts.value === 'number' && pts.value > 0) points = pts.value;
+  }
+
+  // Ward value + caster cross-links from the unit's categories.
+  let ward: string | undefined;
+  let isWizard = false;
+  let isPriest = false;
+  if (Array.isArray(selection.categories)) {
+    for (const cat of selection.categories) {
+      const cn = cat?.name;
+      if (typeof cn !== 'string') continue;
+      const wardM = cn.match(/^WARD\s*\(([^)]+)\)/i);
+      if (wardM) ward = wardM[1].trim();
+      if (/^WIZARD\s*\(/i.test(cn)) isWizard = true;
+      if (/^PRIEST\s*\(/i.test(cn)) isPriest = true;
+    }
+  }
+
+  // Show ranged weapons before melee, matching warscroll layout.
+  weapons.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'ranged' ? -1 : 1));
+
+  return {
+    id,
+    name,
+    models,
+    points,
+    move,
+    health,
+    save,
+    control,
+    ward,
+    weapons,
+    isWizard,
+    isPriest,
+  };
 }
 
 /**

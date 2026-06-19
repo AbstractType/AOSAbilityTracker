@@ -15,6 +15,7 @@ import { parseAbilitiesFromJSON, type Wizard, type Priest } from './src/utils/js
 import type { User } from './src/types/user';
 import type { SavedArmy } from './src/types/army';
 import type { Customization } from './src/types/customization';
+import type { Unit } from './src/types/unit';
 import type { Profile } from './src/types/profile';
 import { supabase } from './src/lib/supabase';
 import { getSavedArmies, saveArmy, deleteArmy } from './src/utils/savedArmies';
@@ -72,6 +73,7 @@ export default function App() {
   const [abilities, setAbilities] = useState<Ability[]>([]);
   const [wizards, setWizards] = useState<Wizard[]>([]);
   const [priests, setPriests] = useState<Priest[]>([]);
+  const [units, setUnits] = useState<Unit[]>([]);
   /** Raw JSON of whatever army is currently loaded, kept so we can save it later */
   const [currentArmyJson, setCurrentArmyJson] = useState<string | null>(null);
   /**
@@ -347,6 +349,7 @@ export default function App() {
       setAbilities(parsed.abilities);
       setWizards(parsed.wizards);
       setPriests(parsed.priests);
+      setUnits(parsed.units);
       setCurrentArmyJson(json);
       // Bump the load counter so the tracker remounts with fresh per-game state
       // (deploymentComplete, activePhase, etc.) for the new army.
@@ -367,6 +370,7 @@ export default function App() {
     setAbilities([]);
     setWizards([]);
     setPriests([]);
+    setUnits([]);
     setCurrentArmyJson(null);
   }
 
@@ -498,6 +502,7 @@ export default function App() {
           abilities={abilities}
           wizards={wizards}
           priests={priests}
+          units={units}
           onAbilitiesChange={setAbilities}
           onBack={handleBackToHome}
           user={screenUser}

@@ -3,6 +3,7 @@ import { View, FlatList, StyleSheet } from 'react-native';
 import type { Ability, Phase } from '../../types';
 import type { Customization } from '../../types/customization';
 import { keyForAbility } from '../../types/customization';
+import { distributeIntoColumns } from '../../utils/masonry';
 import AbilityCard from './AbilityCard';
 
 interface PhaseSection {
@@ -29,6 +30,12 @@ interface AbilityListProps {
   horizontalPadding: number;
   /** How many ability cards to display per row (defaults to 1) */
   cardColumns?: number;
+  /**
+   * Optional content rendered above the phase sections (and scrolling with
+   * them) — used for the inline Units section. Lives in the FlatList header so
+   * it scrolls beneath the pinned casters row.
+   */
+  header?: React.ReactElement | null;
 }
 
 /**
@@ -52,12 +59,14 @@ export default function AbilityList({
   contentMaxWidth,
   horizontalPadding,
   cardColumns = 1,
+  header,
 }: AbilityListProps) {
   return (
     <FlatList
       data={sections}
       keyExtractor={section => section.phase}
       style={styles.list}
+      ListHeaderComponent={header ?? null}
       contentContainerStyle={[
         styles.content,
         { maxWidth: contentMaxWidth, alignSelf: 'center', width: '100%' },
@@ -95,19 +104,6 @@ export default function AbilityList({
       }}
     />
   );
-}
-
-/**
- * Splits an ordered list of items into N columns using round-robin distribution.
- * Preserves the original reading order when read column-by-column, top-to-bottom.
- */
-function distributeIntoColumns<T>(items: T[], columnCount: number): T[][] {
-  const safeCount = Math.max(1, columnCount);
-  const columns: T[][] = Array.from({ length: safeCount }, () => []);
-  items.forEach((item, index) => {
-    columns[index % safeCount].push(item);
-  });
-  return columns;
 }
 
 const styles = StyleSheet.create({

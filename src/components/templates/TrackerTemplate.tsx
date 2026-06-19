@@ -2,12 +2,14 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import type { Ability, Phase } from '../../types';
 import type { Wizard, Priest } from '../../utils/jsonParser';
+import type { Unit, UnitState } from '../../types/unit';
 import type { User } from '../../types/user';
 import type { Customization } from '../../types/customization';
 import AppHeader from '../organisms/AppHeader';
 import PhaseSelector from '../organisms/PhaseSelector';
 import WizardSection from '../organisms/WizardSection';
 import PriestSection from '../organisms/PriestSection';
+import UnitSection from '../organisms/UnitSection';
 import AbilityList from '../organisms/AbilityList';
 import ReorderableAbilityList from '../organisms/ReorderableAbilityList';
 import KeywordsModal from '../organisms/KeywordsModal';
@@ -23,6 +25,11 @@ interface TrackerTemplateProps {
   abilities: Ability[];
   wizards: Wizard[];
   priests: Priest[];
+  units: Unit[];
+  /** Ephemeral per-unit combat state (wounds/destroyed), keyed by unit id. */
+  unitStates: Map<string, UnitState>;
+  onUnitWoundsChange: (unitId: string, delta: number) => void;
+  onToggleUnitDestroyed: (unitId: string) => void;
   visiblePhases: Phase[];
   activePhase: Phase | null;
   displaySections: PhaseSection[];
@@ -196,6 +203,18 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
           contentMaxWidth={contentMaxWidth}
           horizontalPadding={horizontalPadding}
           cardColumns={cardColumns}
+          header={
+            props.units.length > 0 ? (
+              <UnitSection
+                units={props.units}
+                unitStates={props.unitStates}
+                onUnitWoundsChange={props.onUnitWoundsChange}
+                onToggleUnitDestroyed={props.onToggleUnitDestroyed}
+                horizontalPadding={horizontalPadding}
+                cardColumns={cardColumns}
+              />
+            ) : null
+          }
         />
       )}
 
