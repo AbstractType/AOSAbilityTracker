@@ -44,6 +44,10 @@ export interface Unit {
   /** Cross-links to the caster summary, for an optional badge on the card. */
   isWizard?: boolean;
   isPriest?: boolean;
+  /** True when the roster reinforced this unit (a "Reinforced" upgrade). */
+  reinforced?: boolean;
+  /** True for faction-terrain pieces — shown separately, not as a unit. */
+  isTerrain?: boolean;
 }
 
 /**

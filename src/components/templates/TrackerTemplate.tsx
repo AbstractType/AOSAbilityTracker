@@ -25,7 +25,14 @@ interface TrackerTemplateProps {
   abilities: Ability[];
   wizards: Wizard[];
   priests: Priest[];
-  units: Unit[];
+  /** Phase-visible non-terrain units (the grid). */
+  unitsVisible: Unit[];
+  /** Terrain pieces, shown in their own subsection. */
+  terrain: Unit[];
+  /** Total non-terrain units in the army (for the "n of total" count). */
+  unitsTotal: number;
+  /** How many non-terrain units are destroyed (header badge). */
+  destroyedTotal: number;
   /** Ephemeral per-unit combat state (wounds/destroyed), keyed by unit id. */
   unitStates: Map<string, UnitState>;
   onUnitWoundsChange: (unitId: string, delta: number) => void;
@@ -207,9 +214,12 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
           cardColumns={cardColumns}
           destroyedSources={props.destroyedSources}
           header={
-            props.units.length > 0 ? (
+            props.unitsTotal > 0 || props.terrain.length > 0 ? (
               <UnitSection
-                units={props.units}
+                units={props.unitsVisible}
+                terrain={props.terrain}
+                unitsTotal={props.unitsTotal}
+                destroyedTotal={props.destroyedTotal}
                 unitStates={props.unitStates}
                 onUnitWoundsChange={props.onUnitWoundsChange}
                 onToggleUnitDestroyed={props.onToggleUnitDestroyed}

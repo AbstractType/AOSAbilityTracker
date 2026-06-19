@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Ability, Phase } from '../types';
 import type { Wizard, Priest } from '../utils/jsonParser';
 import type { Unit, UnitState } from '../types/unit';
-import { unitTotalWounds } from '../utils/units';
+import { unitTotalWounds, unitRelevantToPhase } from '../utils/units';
 import type { User } from '../types/user';
 import type { Customization } from '../types/customization';
 import { keyForAbility } from '../types/customization';
@@ -366,6 +366,37 @@ export default function AbilityTrackerScreen({
     }
   }
 
+  // The set of phases each source unit's abilities fall in, keyed by unit name.
+  // Drives which units stay visible when a phase is active.
+  const abilityPhasesBySource = useMemo(() => {
+    const map = new Map<string, Set<Phase>>();
+    for (const a of abilities) {
+      if (!a.source) continue;
+      const set = map.get(a.source) ?? new Set<Phase>();
+      set.add(a.phase);
+      map.set(a.source, set);
+    }
+    return map;
+  }, [abilities]);
+
+  // Split terrain out (it's not a unit), and when a phase is active, narrow the
+  // unit grid to those relevant to that phase (see unitRelevantToPhase). With no
+  // active phase we show every non-terrain unit.
+  const { nonTerrainUnits, terrainUnits, visibleUnits, destroyedUnitCount } = useMemo(() => {
+    const terrain = units.filter((u) => u.isTerrain);
+    const real = units.filter((u) => !u.isTerrain);
+    const visible = activePhase
+      ? real.filter((u) => unitRelevantToPhase(u, activePhase, abilityPhasesBySource.get(u.name)))
+      : real;
+    const destroyed = real.reduce((n, u) => n + (unitStates.get(u.id)?.destroyed ? 1 : 0), 0);
+    return {
+      nonTerrainUnits: real,
+      terrainUnits: terrain,
+      visibleUnits: visible,
+      destroyedUnitCount: destroyed,
+    };
+  }, [units, activePhase, abilityPhasesBySource, unitStates]);
+
   // Source-unit names that are *fully* destroyed: every unit sharing that name
   // is destroyed. An ability whose `source` matches is then marked unusable. We
   // require ALL same-named units to be down so a duplicate unit (e.g. two of the
@@ -395,7 +426,10 @@ export default function AbilityTrackerScreen({
         abilities={abilities}
         wizards={wizards}
         priests={priests}
-        units={units}
+        unitsVisible={visibleUnits}
+        terrain={terrainUnits}
+        unitsTotal={nonTerrainUnits.length}
+        destroyedTotal={destroyedUnitCount}
         unitStates={unitStates}
         onUnitWoundsChange={adjustUnitWounds}
         onToggleUnitDestroyed={toggleUnitDestroyed}

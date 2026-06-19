@@ -1,4 +1,27 @@
+import type { Phase } from '../types';
 import type { Unit } from '../types/unit';
+
+/**
+ * Whether a unit is worth showing when a given phase is active. Beyond "has an
+ * ability in this phase", a few phases matter regardless of abilities:
+ *   - Combat: every unit may fight.
+ *   - Shooting: anything with a ranged weapon can shoot (the single Shooting
+ *     Phase covers both your and the enemy's shooting timings).
+ *   - Hero: wizards/priests can still cast a spell / chant a prayer from a lore.
+ *
+ * `abilityPhases` is the set of phases this unit's own abilities fall in.
+ */
+export function unitRelevantToPhase(
+  unit: Unit,
+  phase: Phase,
+  abilityPhases: Set<Phase> | undefined
+): boolean {
+  if (phase === 'Combat Phase') return true;
+  if (abilityPhases?.has(phase)) return true;
+  if (phase === 'Shooting Phase' && unit.weapons.some((w) => w.kind === 'ranged')) return true;
+  if (phase === 'Hero Phase' && (unit.isWizard || unit.isPriest)) return true;
+  return false;
+}
 
 /**
  * Wound-tracking helpers. A unit's total wound pool is its per-model Health

@@ -56,6 +56,11 @@ export default function UnitCard({
               <Text style={styles.casterTagText}>{unit.isWizard ? 'WIZARD' : 'PRIEST'}</Text>
             </View>
           )}
+          {unit.reinforced && (
+            <View style={styles.reinforcedTag}>
+              <Text style={styles.reinforcedTagText}>⚑ REINFORCED</Text>
+            </View>
+          )}
         </View>
         <View style={styles.headerRight}>
           {unit.points !== undefined && <Text style={styles.points}>{unit.points} pts</Text>}
@@ -226,6 +231,18 @@ const styles = StyleSheet.create({
   },
   casterTagText: {
     color: '#fff',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  reinforcedTag: {
+    backgroundColor: '#B08A2E',
+    borderRadius: radii.sm,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  reinforcedTagText: {
+    color: '#1B1B1B',
     fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.5,

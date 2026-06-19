@@ -6,43 +6,67 @@ import { radii } from '../../theme/tokens';
 import UnitCard from './UnitCard';
 
 interface UnitSectionProps {
+  /** Units to show in the grid — already phase-filtered, terrain excluded. */
   units: Unit[];
+  /** Terrain pieces, shown in their own subsection (not phase-filtered). */
+  terrain: Unit[];
+  /** Total non-terrain units in the army (for the "n of total" count). */
+  unitsTotal: number;
+  /** How many non-terrain units are destroyed (header badge). */
+  destroyedTotal: number;
   /** Ephemeral per-unit combat state, keyed by unit id. */
   unitStates: Map<string, UnitState>;
   onUnitWoundsChange: (unitId: string, delta: number) => void;
   onToggleUnitDestroyed: (unitId: string) => void;
-  /** Horizontal padding (matches the phase sections). */
   horizontalPadding: number;
-  /** Columns for the masonry grid (matches the ability grid). */
   cardColumns: number;
 }
 
 const EMPTY_STATE: UnitState = { wounds: 0, destroyed: false };
 
 /**
- * UnitSection — the inline "Units" block shown above the phase ability sections.
- * Renders one UnitCard per unit in the same masonry grid the abilities use, so
- * the whole army (stats + weapons + live wound tracking) sits in one scroll.
+ * UnitSection — the collapsible "Units" block above the phase ability sections.
+ * Renders the (phase-filtered) units in a masonry grid, with terrain split into
+ * its own subsection. Collapsed by default so it's on demand.
  */
 export default function UnitSection({
   units,
+  terrain,
+  unitsTotal,
+  destroyedTotal,
   unitStates,
   onUnitWoundsChange,
   onToggleUnitDestroyed,
   horizontalPadding,
   cardColumns,
 }: UnitSectionProps) {
-  // Collapsed by default so the units are available on demand without crowding
-  // the ability tracker. Local state persists across re-renders (the header
-  // element keeps its instance); it resets when a new army loads.
   const [collapsed, setCollapsed] = useState(true);
 
-  if (units.length === 0) return null;
-
-  const destroyedCount = units.reduce(
-    (n, u) => n + (unitStates.get(u.id)?.destroyed ? 1 : 0),
-    0
+  const renderGrid = (list: Unit[]) => (
+    <View style={styles.masonryGrid}>
+      {distributeIntoColumns(list, cardColumns).map((columnItems, colIdx) => (
+        <View key={colIdx} style={styles.masonryColumn}>
+          {columnItems.map((unit) => {
+            const state = unitStates.get(unit.id) ?? EMPTY_STATE;
+            return (
+              <UnitCard
+                key={unit.id}
+                unit={unit}
+                wounds={state.wounds}
+                destroyed={state.destroyed}
+                onWoundsChange={(delta) => onUnitWoundsChange(unit.id, delta)}
+                onToggleDestroyed={() => onToggleUnitDestroyed(unit.id)}
+              />
+            );
+          })}
+        </View>
+      ))}
+    </View>
   );
+
+  // "Units (8)" normally; "Units (2 of 8)" when a phase narrows the list.
+  const countLabel =
+    units.length === unitsTotal ? `Units (${unitsTotal})` : `Units (${units.length} of ${unitsTotal})`;
 
   return (
     <View style={[styles.section, { paddingHorizontal: horizontalPadding }]}>
@@ -53,33 +77,26 @@ export default function UnitSection({
         accessibilityRole="button"
       >
         <Text style={styles.chevron}>{collapsed ? '▸' : '▾'}</Text>
-        <Text style={styles.heading}>Units ({units.length})</Text>
-        {destroyedCount > 0 && (
-          <Text style={styles.destroyedCount}>{destroyedCount} destroyed</Text>
-        )}
+        <Text style={styles.heading}>{countLabel}</Text>
+        {destroyedTotal > 0 && <Text style={styles.destroyedCount}>{destroyedTotal} destroyed</Text>}
         <Text style={styles.toggleHint}>{collapsed ? 'Show' : 'Hide'}</Text>
       </TouchableOpacity>
 
       {!collapsed && (
-        <View style={styles.masonryGrid}>
-          {distributeIntoColumns(units, cardColumns).map((columnItems, colIdx) => (
-            <View key={colIdx} style={styles.masonryColumn}>
-              {columnItems.map((unit) => {
-                const state = unitStates.get(unit.id) ?? EMPTY_STATE;
-                return (
-                  <UnitCard
-                    key={unit.id}
-                    unit={unit}
-                    wounds={state.wounds}
-                    destroyed={state.destroyed}
-                    onWoundsChange={(delta) => onUnitWoundsChange(unit.id, delta)}
-                    onToggleDestroyed={() => onToggleUnitDestroyed(unit.id)}
-                  />
-                );
-              })}
-            </View>
-          ))}
-        </View>
+        <>
+          {units.length > 0 ? (
+            renderGrid(units)
+          ) : (
+            <Text style={styles.emptyNote}>No units act in this phase.</Text>
+          )}
+
+          {terrain.length > 0 && (
+            <>
+              <Text style={styles.subHeading}>Terrain ({terrain.length})</Text>
+              {renderGrid(terrain)}
+            </>
+          )}
+        </>
       )}
     </View>
   );
@@ -122,6 +139,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     marginLeft: 'auto',
+  },
+  subHeading: {
+    color: '#9DB0CF',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginTop: 14,
+    marginBottom: 10,
+  },
+  emptyNote: {
+    color: '#7A8BA4',
+    fontSize: 13,
+    fontStyle: 'italic',
+    paddingVertical: 4,
   },
   masonryGrid: {
     flexDirection: 'row',

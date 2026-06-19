@@ -295,6 +295,7 @@ function buildUnit(selection: any, id: string): Unit | null {
   const weapons: WeaponProfile[] = [];
   const seenWeapons = new Set<string>();
   let modelCount = 0;
+  let reinforced = false;
 
   function mine(node: any): void {
     if (!node) return;
@@ -321,6 +322,11 @@ function buildUnit(selection: any, id: string): Unit | null {
       modelCount += typeof node.number === 'number' ? node.number : 1;
     }
 
+    // A "Reinforced" upgrade selection marks the unit as reinforced.
+    if (node !== selection && typeof node.name === 'string' && /^reinforced$/i.test(node.name.trim())) {
+      reinforced = true;
+    }
+
     for (const key in node) {
       // categories/costs never hold weapons or models — skip for speed/safety.
       if (key === 'categories' || key === 'costs') continue;
@@ -338,10 +344,11 @@ function buildUnit(selection: any, id: string): Unit | null {
     if (pts && typeof pts.value === 'number' && pts.value > 0) points = pts.value;
   }
 
-  // Ward value + caster cross-links from the unit's categories.
+  // Ward value + caster cross-links + terrain flag from the unit's categories.
   let ward: string | undefined;
   let isWizard = false;
   let isPriest = false;
+  let isTerrain = false;
   if (Array.isArray(selection.categories)) {
     for (const cat of selection.categories) {
       const cn = cat?.name;
@@ -350,6 +357,7 @@ function buildUnit(selection: any, id: string): Unit | null {
       if (wardM) ward = wardM[1].trim();
       if (/^WIZARD\s*\(/i.test(cn)) isWizard = true;
       if (/^PRIEST\s*\(/i.test(cn)) isPriest = true;
+      if (/terrain/i.test(cn)) isTerrain = true;
     }
   }
 
@@ -369,6 +377,8 @@ function buildUnit(selection: any, id: string): Unit | null {
     weapons,
     isWizard,
     isPriest,
+    reinforced,
+    isTerrain,
   };
 }
 
