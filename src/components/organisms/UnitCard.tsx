@@ -208,6 +208,11 @@ export default function UnitCard({
   );
 }
 
+/** Remove BattleScribe formatting markers from weapon ability text. */
+function cleanWeaponAbilityText(text: string): string {
+  return text.replace(/\*\*/g, '').replace(/\^\^/g, '');
+}
+
 /** One stat chip (label over value). */
 function Stat({ label, value }: { label: string; value?: string }) {
   return (
@@ -250,7 +255,7 @@ function WeaponTable({
             <Text style={styles.weaponCell}>{w.rend}</Text>
             <Text style={styles.weaponCell}>{w.damage}</Text>
           </View>
-          {w.ability ? <Text style={styles.weaponAbility}>✦ {w.ability}</Text> : null}
+          {w.ability ? <Text style={styles.weaponAbility}>✦ {cleanWeaponAbilityText(w.ability)}</Text> : null}
         </View>
       ))}
     </View>
