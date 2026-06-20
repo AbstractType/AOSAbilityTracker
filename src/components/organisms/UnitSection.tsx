@@ -101,20 +101,18 @@ export default function UnitSection({
           {units.length > 0 ? (
             (() => {
               // Categorize units by role
-              const categories = ['hero', 'unique', 'cavalry', 'infantry', 'other'] as const;
+              const categories = ['hero', 'unique', 'cavalry', 'infantry'] as const;
               const categoryLabels: Record<string, string> = {
                 hero: 'Heroes',
                 unique: 'Unique Heroes',
                 cavalry: 'Cavalry',
                 infantry: 'Infantry',
-                other: 'Other Units',
               };
               const categorizedUnits: Record<string, Unit[]> = {
                 hero: [],
                 unique: [],
                 cavalry: [],
                 infantry: [],
-                other: [],
               };
 
               units.forEach(u => {

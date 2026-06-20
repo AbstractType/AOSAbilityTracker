@@ -58,16 +58,16 @@ export function modelsRemaining(unit: Unit, wounds: number): number {
 
 /**
  * Categorize a unit by its keywords (role). Used to organize units in the roster.
- * Checks keywords for role keywords (case-insensitive).
+ * Checks keywords for role keywords (case-insensitive). Defaults to 'infantry'.
  */
 export function unitCategory(
   unit: Unit
-): 'hero' | 'unique' | 'cavalry' | 'infantry' | 'manifestation' | 'other' {
+): 'hero' | 'unique' | 'cavalry' | 'infantry' | 'manifestation' {
   const keywords = (unit.keywords ?? []).map((k) => k.toUpperCase());
   if (unit.isManifestation) return 'manifestation';
   if (keywords.includes('UNIQUE')) return 'unique';
   if (keywords.includes('HERO')) return 'hero';
   if (keywords.includes('CAVALRY')) return 'cavalry';
   if (keywords.includes('INFANTRY')) return 'infantry';
-  return 'other';
+  return 'infantry';
 }
