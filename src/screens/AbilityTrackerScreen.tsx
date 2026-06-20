@@ -279,13 +279,14 @@ export default function AbilityTrackerScreen({
           return getAbilitySortPriority(a) - getAbilitySortPriority(b);
         });
 
-        // Sub-group by category (spell / prayer / command / other)
-        const categoryOrder = { spell: 0, prayer: 1, command: 2, other: 3 };
+        // Sub-group by category (spell / prayer / command / passive_unit / passive_terrain)
+        const categoryOrder = { spell: 0, prayer: 1, command: 2, passive_unit: 3, passive_terrain: 4 };
         const categorized: Record<string, Ability[]> = {
           spell: [],
           prayer: [],
           command: [],
-          other: [],
+          passive_unit: [],
+          passive_terrain: [],
         };
 
         sorted.forEach(ability => {
@@ -299,7 +300,7 @@ export default function AbilityTrackerScreen({
           categories: (Object.entries(categorized) as [string, Ability[]][])
             .filter(([_, items]) => items.length > 0)
             .sort(([catA], [catB]) => categoryOrder[catA as keyof typeof categoryOrder] - categoryOrder[catB as keyof typeof categoryOrder])
-            .map(([category, items]) => ({ category: category as 'spell' | 'prayer' | 'command' | 'other', items })),
+            .map(([category, items]) => ({ category: category as 'spell' | 'prayer' | 'command' | 'passive_unit' | 'passive_terrain', items })),
         };
       }),
     [castableAbilities, visiblePhases, customizations]

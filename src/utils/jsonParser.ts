@@ -541,6 +541,9 @@ function parseAbility(profile: AbilityProfile, id: string, source?: string): Abi
   const requiresWizard = isSpell || /\bwizard\b/i.test(whoText);
   const requiresPriest = isPrayer || /\bpriest\b/i.test(whoText);
 
+  // Check if this ability is from a terrain feature by examining the source name
+  const isTerrain = source ? /terrain|tower|feature/i.test(source) : false;
+
   return {
     id,
     name: profile.name,
@@ -559,6 +562,7 @@ function parseAbility(profile: AbilityProfile, id: string, source?: string): Abi
     commandCost,
     source,
     timing: timing || undefined,
+    isTerrain,
   };
 }
 

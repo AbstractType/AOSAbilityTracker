@@ -7,7 +7,7 @@ import { distributeIntoColumns } from '../../utils/masonry';
 import AbilityCard from './AbilityCard';
 
 interface AbilityCategory {
-  category: 'spell' | 'prayer' | 'command' | 'other';
+  category: 'spell' | 'prayer' | 'command' | 'passive_unit' | 'passive_terrain';
   items: Ability[];
 }
 
@@ -95,7 +95,8 @@ export default function AbilityList({
           spell: 'SPELLS',
           prayer: 'PRAYERS',
           command: 'COMMANDS',
-          other: 'OTHER',
+          passive_unit: 'UNIT ABILITIES',
+          passive_terrain: 'TERRAIN ABILITIES',
         };
 
         const renderAbilityGrid = (items: Ability[]) => (

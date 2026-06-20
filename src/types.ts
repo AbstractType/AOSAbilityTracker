@@ -29,4 +29,6 @@ export type Ability = {
   isCommand?: boolean;
   commandCost?: number;
   timing?: string;
+  /** True when the ability is from a terrain feature. */
+  isTerrain?: boolean;
 };
