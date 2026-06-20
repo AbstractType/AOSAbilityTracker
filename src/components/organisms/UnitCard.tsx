@@ -129,7 +129,9 @@ export default function UnitCard({
       {/* Keywords tags */}
       {unit.keywords && unit.keywords.length > 0 && (
         <View style={styles.keywordsRow}>
-          {unit.keywords.map((kw, idx) => (
+          {unit.keywords
+            .filter(kw => kw.toLowerCase() !== 'manifestation')
+            .map((kw, idx) => (
             <View key={idx} style={styles.keywordTag}>
               <Text style={styles.keywordText}>{kw}</Text>
             </View>

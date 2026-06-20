@@ -369,13 +369,26 @@ function buildUnit(selection: any, id: string): Unit | null {
     for (const cat of selection.categories) {
       const cn = cat?.name;
       if (typeof cn !== 'string') continue;
-      keywords.push(cn);
       const wardM = cn.match(/^WARD\s*\(([^)]+)\)/i);
-      if (wardM) ward = wardM[1].trim();
-      if (/^WIZARD\s*\(/i.test(cn)) isWizard = true;
-      if (/^PRIEST\s*\(/i.test(cn)) isPriest = true;
-      if (/terrain/i.test(cn)) isTerrain = true;
-      if (/manifestation/i.test(cn)) isManifestation = true;
+      if (wardM) {
+        ward = wardM[1].trim();
+        // Skip WARD categories — already shown as stat
+      } else if (/^WIZARD\s*\(/i.test(cn)) {
+        isWizard = true;
+        // Skip WIZARD categories — shown as badge
+      } else if (/^PRIEST\s*\(/i.test(cn)) {
+        isPriest = true;
+        // Skip PRIEST categories — shown as badge
+      } else if (/terrain/i.test(cn)) {
+        isTerrain = true;
+        // Skip TERRAIN categories — handled by isTerrain flag
+      } else if (/manifestation/i.test(cn)) {
+        isManifestation = true;
+        // Skip MANIFESTATION categories — handled by isManifestation flag
+      } else {
+        // Only add non-special categories to keywords
+        keywords.push(cn);
+      }
     }
   }
 
