@@ -4,7 +4,7 @@ import type { Ability } from '../../types';
 import AbilityCardHeader from '../molecules/AbilityCardHeader';
 import AbilityDescription from '../molecules/AbilityDescription';
 import KeywordsList from '../molecules/KeywordsList';
-import Badge, { getCastingBadgeVariant } from '../atoms/Badge';
+import Badge, { getCastingBadgeVariant, getChanningBadgeVariant } from '../atoms/Badge';
 import { colors, radii, shadows } from '../../theme/tokens';
 import { useResponsive } from '../../utils/responsive';
 import { universalKeywords } from '../../data/universalKeywords';
@@ -86,6 +86,16 @@ export default function AbilityCard({
             label="Casting"
             value={ability.castingValue}
             variant={getCastingBadgeVariant(ability.castingValue)}
+            cornerCutout
+          />
+        )}
+
+        {/* Chanting value badge (top-right cutout) */}
+        {ability.chantingValue !== undefined && (
+          <Badge
+            label="Chant"
+            value={ability.chantingValue}
+            variant={getChanningBadgeVariant(ability.chantingValue)}
             cornerCutout
           />
         )}

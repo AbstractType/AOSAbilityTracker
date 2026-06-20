@@ -358,16 +358,18 @@ function buildUnit(selection: any, id: string): Unit | null {
     if (pts && typeof pts.value === 'number' && pts.value > 0) points = pts.value;
   }
 
-  // Ward value + caster cross-links + terrain flag from the unit's categories.
+  // Ward value + caster cross-links + terrain flag + all keywords from the unit's categories.
   let ward: string | undefined;
   let isWizard = false;
   let isPriest = false;
   let isTerrain = false;
   let isManifestation = statIsManifestation;
+  const keywords: string[] = [];
   if (Array.isArray(selection.categories)) {
     for (const cat of selection.categories) {
       const cn = cat?.name;
       if (typeof cn !== 'string') continue;
+      keywords.push(cn);
       const wardM = cn.match(/^WARD\s*\(([^)]+)\)/i);
       if (wardM) ward = wardM[1].trim();
       if (/^WIZARD\s*\(/i.test(cn)) isWizard = true;
@@ -397,6 +399,7 @@ function buildUnit(selection: any, id: string): Unit | null {
     reinforced,
     isTerrain,
     isManifestation,
+    keywords,
   };
 }
 
@@ -431,6 +434,7 @@ function parseAbility(profile: AbilityProfile, id: string, source?: string): Abi
   let description = '';
   let keywordText = '';
   let castingValue: number | undefined;
+  let chantingValue: number | undefined;
   let commandCost: number | undefined;
 
   profile.characteristics?.forEach(char => {
@@ -453,6 +457,12 @@ function parseAbility(profile: AbilityProfile, id: string, source?: string): Abi
       const match = char.$text.match(/\d+/);
       if (match) {
         castingValue = parseInt(match[0], 10);
+      }
+    }
+    if (char.name === 'Chanting Value' && char.$text) {
+      const match = char.$text.match(/\d+/);
+      if (match) {
+        chantingValue = parseInt(match[0], 10);
       }
     }
     if (char.name === 'Cost' && char.$text) {
@@ -531,6 +541,7 @@ function parseAbility(profile: AbilityProfile, id: string, source?: string): Abi
     requiresWizard,
     requiresPriest,
     castingValue,
+    chantingValue,
     isCommand,
     commandCost,
     source,

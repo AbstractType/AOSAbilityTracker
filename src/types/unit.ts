@@ -52,6 +52,8 @@ export interface Unit {
   isTerrain?: boolean;
   /** True for manifestations (summoned units) — shown separately, hidden until summoned. */
   isManifestation?: boolean;
+  /** BattleScribe keywords/categories (HERO, CAVALRY, INFANTRY, IRONJAWZ, etc.). */
+  keywords: string[];
 }
 
 /**

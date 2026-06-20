@@ -126,6 +126,17 @@ export default function UnitCard({
         {unit.ward ? <Stat label="WARD" value={unit.ward} /> : null}
       </View>
 
+      {/* Keywords tags */}
+      {unit.keywords && unit.keywords.length > 0 && (
+        <View style={styles.keywordsRow}>
+          {unit.keywords.map((kw, idx) => (
+            <View key={idx} style={styles.keywordTag}>
+              <Text style={styles.keywordText}>{kw}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
       {/* Weapons */}
       <View style={styles.weaponsWrap}>
         {ranged.length > 0 && <WeaponTable title="RANGED WEAPONS" weapons={ranged} ranged />}
@@ -343,6 +354,25 @@ const styles = StyleSheet.create({
     color: colors.textCream,
     fontSize: 15,
     fontWeight: '900',
+  },
+  // ---- keywords ----
+  keywordsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  keywordTag: {
+    backgroundColor: '#2A3F5F',
+    borderRadius: radii.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  keywordText: {
+    color: '#A8C5E0',
+    fontSize: 10,
+    fontWeight: '600',
   },
   // ---- weapons ----
   weaponsWrap: {

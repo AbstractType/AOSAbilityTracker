@@ -7,6 +7,8 @@ export type BadgeVariant =
   | 'castingGreen'
   | 'castingAmber'
   | 'castingRed'
+  | 'chantingPurple'
+  | 'chantingDark'
   | 'command'
   | 'ready'
   | 'used'
@@ -78,6 +80,14 @@ const VARIANT_STYLES: Record<BadgeVariant, { container: ViewStyle; text: TextSty
     container: { backgroundColor: colors.castingRed },
     text: { color: colors.textCream },
   },
+  chantingPurple: {
+    container: { backgroundColor: '#7B4FB6' },
+    text: { color: colors.textCream },
+  },
+  chantingDark: {
+    container: { backgroundColor: '#5A3680' },
+    text: { color: colors.textCream },
+  },
   command: {
     container: { backgroundColor: colors.command },
     text: { color: colors.textCream },
@@ -142,4 +152,13 @@ export function getCastingBadgeVariant(castingValue: number): BadgeVariant {
   if (castingValue <= 5) return 'castingGreen';
   if (castingValue <= 7) return 'castingAmber';
   return 'castingRed';
+}
+
+/**
+ * Helper to pick a chanting badge variant based on chanting value difficulty.
+ * Uses purple tones to distinguish from casting (green/amber/red).
+ */
+export function getChanningBadgeVariant(chantingValue: number): BadgeVariant {
+  if (chantingValue <= 5) return 'chantingPurple';
+  return 'chantingDark';
 }

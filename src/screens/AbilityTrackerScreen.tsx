@@ -3,6 +3,7 @@ import type { Ability, Phase } from '../types';
 import type { Wizard, Priest } from '../utils/jsonParser';
 import type { Unit, UnitState } from '../types/unit';
 import { unitTotalWounds, unitRelevantToPhase } from '../utils/units';
+import { categorizeAbility } from '../utils/abilities';
 import type { User } from '../types/user';
 import type { Customization } from '../types/customization';
 import { keyForAbility } from '../types/customization';
@@ -267,17 +268,40 @@ export default function AbilityTrackerScreen({
   // priority order.
   const abilitiesByPhase = useMemo(
     () =>
-      visiblePhases.map(phase => ({
-        phase,
-        items: castableAbilities
-          .filter(a => a.phase === phase)
-          .sort((a, b) => {
-            const aOrder = customizations.get(keyForAbility(a))?.sortOrder ?? Number.MAX_SAFE_INTEGER;
-            const bOrder = customizations.get(keyForAbility(b))?.sortOrder ?? Number.MAX_SAFE_INTEGER;
-            if (aOrder !== bOrder) return aOrder - bOrder;
-            return getAbilitySortPriority(a) - getAbilitySortPriority(b);
-          }),
-      })),
+      visiblePhases.map(phase => {
+        const phaseAbilities = castableAbilities.filter(a => a.phase === phase);
+
+        // Sort abilities within the phase
+        const sorted = phaseAbilities.sort((a, b) => {
+          const aOrder = customizations.get(keyForAbility(a))?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+          const bOrder = customizations.get(keyForAbility(b))?.sortOrder ?? Number.MAX_SAFE_INTEGER;
+          if (aOrder !== bOrder) return aOrder - bOrder;
+          return getAbilitySortPriority(a) - getAbilitySortPriority(b);
+        });
+
+        // Sub-group by category (spell / prayer / command / other)
+        const categoryOrder = { spell: 0, prayer: 1, command: 2, other: 3 };
+        const categorized: Record<string, Ability[]> = {
+          spell: [],
+          prayer: [],
+          command: [],
+          other: [],
+        };
+
+        sorted.forEach(ability => {
+          const cat = categorizeAbility(ability);
+          categorized[cat].push(ability);
+        });
+
+        return {
+          phase,
+          items: sorted,
+          categories: (Object.entries(categorized) as [string, Ability[]][])
+            .filter(([_, items]) => items.length > 0)
+            .sort(([catA], [catB]) => categoryOrder[catA as keyof typeof categoryOrder] - categoryOrder[catB as keyof typeof categoryOrder])
+            .map(([category, items]) => ({ category: category as 'spell' | 'prayer' | 'command' | 'other', items })),
+        };
+      }),
     [castableAbilities, visiblePhases, customizations]
   );
 

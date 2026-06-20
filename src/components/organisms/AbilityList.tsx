@@ -1,14 +1,20 @@
 import React from 'react';
-import { View, FlatList, StyleSheet } from 'react-native';
+import { View, FlatList, Text, StyleSheet } from 'react-native';
 import type { Ability, Phase } from '../../types';
 import type { Customization } from '../../types/customization';
 import { keyForAbility } from '../../types/customization';
 import { distributeIntoColumns } from '../../utils/masonry';
 import AbilityCard from './AbilityCard';
 
+interface AbilityCategory {
+  category: 'spell' | 'prayer' | 'command' | 'other';
+  items: Ability[];
+}
+
 interface PhaseSection {
   phase: Phase;
   items: Ability[];
+  categories?: AbilityCategory[];
 }
 
 interface AbilityListProps {
@@ -84,32 +90,57 @@ export default function AbilityList({
         // has actions in every roster) render nothing at all, rather than a
         // "No abilities in this phase" placeholder that just adds visual noise.
         if (section.items.length === 0) return null;
+
+        const categoryLabels: Record<string, string> = {
+          spell: 'SPELLS',
+          prayer: 'PRAYERS',
+          command: 'COMMANDS',
+          other: 'OTHER',
+        };
+
+        const renderAbilityGrid = (items: Ability[]) => (
+          <View style={styles.masonryGrid}>
+            {distributeIntoColumns(items, cardColumns).map((columnItems, colIdx) => (
+              <View key={colIdx} style={styles.masonryColumn}>
+                {columnItems.map(ability => {
+                  const custom = customizations?.get(keyForAbility(ability));
+                  return (
+                    <AbilityCard
+                      key={ability.id}
+                      ability={ability}
+                      onToggleUsed={() => onToggleUsed(ability.id)}
+                      onLongPress={
+                        onLongPressAbility ? () => onLongPressAbility(ability) : undefined
+                      }
+                      note={custom?.note}
+                      hidden={custom?.hidden}
+                      sourceDestroyed={
+                        !!ability.source && !!destroyedSources?.has(ability.source)
+                      }
+                    />
+                  );
+                })}
+              </View>
+            ))}
+          </View>
+        );
+
         return (
           <View style={[styles.section, { paddingHorizontal: horizontalPadding }]}>
-            <View style={styles.masonryGrid}>
-              {distributeIntoColumns(section.items, cardColumns).map((columnItems, colIdx) => (
-                <View key={colIdx} style={styles.masonryColumn}>
-                  {columnItems.map(ability => {
-                    const custom = customizations?.get(keyForAbility(ability));
-                    return (
-                      <AbilityCard
-                        key={ability.id}
-                        ability={ability}
-                        onToggleUsed={() => onToggleUsed(ability.id)}
-                        onLongPress={
-                          onLongPressAbility ? () => onLongPressAbility(ability) : undefined
-                        }
-                        note={custom?.note}
-                        hidden={custom?.hidden}
-                        sourceDestroyed={
-                          !!ability.source && !!destroyedSources?.has(ability.source)
-                        }
-                      />
-                    );
-                  })}
+            {section.categories && section.categories.length > 0 ? (
+              // Render with category sub-headers
+              section.categories.map(cat => (
+                <View key={cat.category}>
+                  {section.categories && section.categories.length > 1 && (
+                    <Text style={styles.categoryHeader}>{categoryLabels[cat.category]}</Text>
+                  )}
+                  {renderAbilityGrid(cat.items)}
                 </View>
-              ))}
-            </View>
+              ))
+            ) : (
+              // Fallback: render all items (for backwards compatibility)
+              renderAbilityGrid(section.items)
+            )}
           </View>
         );
       }}
@@ -138,5 +169,14 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     gap: 14,
+  },
+  categoryHeader: {
+    color: '#9DB0CF',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginTop: 12,
+    marginBottom: 10,
   },
 });

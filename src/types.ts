@@ -24,6 +24,8 @@ export type Ability = {
   /** Needs a living Priest to use (a prayer, or its declare names a Priest). */
   requiresPriest?: boolean;
   castingValue?: number;
+  /** Prayer chanting value (e.g., "4"). Similar to castingValue but for prayers. */
+  chantingValue?: number;
   isCommand?: boolean;
   commandCost?: number;
   timing?: string;

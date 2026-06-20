@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import type { Unit, UnitState } from '../../types/unit';
 import { distributeIntoColumns } from '../../utils/masonry';
+import { unitCategory } from '../../utils/units';
 import { radii } from '../../theme/tokens';
 import UnitCard from './UnitCard';
 
@@ -98,7 +99,46 @@ export default function UnitSection({
       {!collapsed && (
         <>
           {units.length > 0 ? (
-            renderGrid(units)
+            (() => {
+              // Categorize units by role
+              const categories = ['hero', 'unique', 'cavalry', 'infantry', 'other'] as const;
+              const categoryLabels: Record<string, string> = {
+                hero: 'Heroes',
+                unique: 'Unique Heroes',
+                cavalry: 'Cavalry',
+                infantry: 'Infantry',
+                other: 'Other Units',
+              };
+              const categorizedUnits: Record<string, Unit[]> = {
+                hero: [],
+                unique: [],
+                cavalry: [],
+                infantry: [],
+                other: [],
+              };
+
+              units.forEach(u => {
+                const cat = unitCategory(u);
+                categorizedUnits[cat].push(u);
+              });
+
+              return (
+                <>
+                  {categories.map(cat => {
+                    const unitsInCategory = categorizedUnits[cat];
+                    if (unitsInCategory.length === 0) return null;
+                    return (
+                      <View key={cat}>
+                        {categories.length > 1 && unitsInCategory.length > 0 && (
+                          <Text style={styles.subHeading}>{categoryLabels[cat]}</Text>
+                        )}
+                        {renderGrid(unitsInCategory)}
+                      </View>
+                    );
+                  })}
+                </>
+              );
+            })()
           ) : unitsTotal > 0 ? (
             <Text style={styles.emptyNote}>No units act in this phase.</Text>
           ) : null}
