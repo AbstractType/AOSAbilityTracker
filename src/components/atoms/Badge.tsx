@@ -81,11 +81,11 @@ const VARIANT_STYLES: Record<BadgeVariant, { container: ViewStyle; text: TextSty
     text: { color: colors.textCream },
   },
   chantingPurple: {
-    container: { backgroundColor: '#7B4FB6' },
+    container: { backgroundColor: '#6B7280' },
     text: { color: colors.textCream },
   },
   chantingDark: {
-    container: { backgroundColor: '#5A3680' },
+    container: { backgroundColor: '#4B5563' },
     text: { color: colors.textCream },
   },
   command: {
