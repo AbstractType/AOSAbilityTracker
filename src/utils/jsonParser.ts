@@ -161,6 +161,8 @@ export function parseAbilitiesFromJSON(jsonString: string): ParsedRosterData {
         commandCost: command.cost,
         source: 'Universal Command',
         timing: command.timing,
+        requiresWizard: command.requiresWizard,
+        requiresPriest: command.requiresPriest,
       };
       abilities.push(commandAbility);
     });
@@ -508,6 +510,14 @@ function parseAbility(profile: AbilityProfile, id: string, source?: string): Abi
 
   const keyword = keywordText || simplifyTypeName(profile.typeName);
 
+  // Whether the ability needs a caster to use it: spells need a Wizard, prayers
+  // a Priest, and some abilities name one in their "who uses it" text (Declare /
+  // Used By). We only read those parts (not Effect) to avoid matching a Wizard
+  // merely mentioned in the rules.
+  const whoText = `${declareText} ${usedByText}`;
+  const requiresWizard = isSpell || /\bwizard\b/i.test(whoText);
+  const requiresPriest = isPrayer || /\bpriest\b/i.test(whoText);
+
   return {
     id,
     name: profile.name,
@@ -518,6 +528,8 @@ function parseAbility(profile: AbilityProfile, id: string, source?: string): Abi
     isPassive,
     isSpell,
     isPrayer,
+    requiresWizard,
+    requiresPriest,
     castingValue,
     isCommand,
     commandCost,

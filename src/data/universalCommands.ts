@@ -8,6 +8,10 @@ export interface UniversalCommand {
   description: string;
   /** Optional comma-separated keywords (e.g., "Move, Run") — rendered via the styled Keywords section. */
   keywords?: string;
+  /** Needs a living Wizard to use (hidden when none remain). */
+  requiresWizard?: boolean;
+  /** Needs a living Priest to use (hidden when none remain). */
+  requiresPriest?: boolean;
 }
 
 export const universalCommands: UniversalCommand[] = [
@@ -23,7 +27,10 @@ export const universalCommands: UniversalCommand[] = [
     cost: 1,
     phase: 'Hero Phase',
     timing: 'Enemy Hero Phase',
-    description: '**Declare:** Pick a friendly Wizard or Priest to use this ability.\n\n**Effect:** That friendly unit can use a Spell or Prayer ability (as appropriate) as if it were your hero phase. If you do so, subtract 1 from casting rolls or chanting rolls made as part of that ability.'
+    description: '**Declare:** Pick a friendly Wizard or Priest to use this ability.\n\n**Effect:** That friendly unit can use a Spell or Prayer ability (as appropriate) as if it were your hero phase. If you do so, subtract 1 from casting rolls or chanting rolls made as part of that ability.',
+    // Needs a Wizard OR a Priest, so it's only hidden once BOTH are gone.
+    requiresWizard: true,
+    requiresPriest: true,
   },
   {
     name: 'Redeploy',

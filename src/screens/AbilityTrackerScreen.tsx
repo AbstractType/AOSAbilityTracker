@@ -249,9 +249,15 @@ export default function AbilityTrackerScreen({
     return visibleAbilities.filter(a => {
       // Un-summoned manifestation's own abilities are hidden until summoned.
       if (a.source && hiddenManifestationSources.has(a.source)) return false;
+      // Army-level (non-unit-sourced) abilities that need a caster are dropped
+      // once that caster type is gone: spell/prayer lores, plus things like the
+      // universal "Magical Intervention" (needs a Wizard OR a Priest). A unit's
+      // own caster abilities stay and use the per-unit "source destroyed" mark.
       const loreSourced = !!a.source && !unitNames.has(a.source);
-      if (loreSourced && a.isSpell && !livingWizard) return false;
-      if (loreSourced && a.isPrayer && !livingPriest) return false;
+      if (loreSourced && (a.requiresWizard || a.requiresPriest)) {
+        const usable = (a.requiresWizard && livingWizard) || (a.requiresPriest && livingPriest);
+        if (!usable) return false;
+      }
       return true;
     });
   }, [visibleAbilities, units, unitStates, hiddenManifestationSources]);
