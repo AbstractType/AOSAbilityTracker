@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,7 +8,10 @@ import {
 } from 'react-native';
 import type { Ability, Phase } from '../types';
 import type { WarRoom } from '../types/warRoom';
+import type { Unit, UnitState } from '../types/unit';
 import { parseAbilitiesFromJSON } from '../utils/jsonParser';
+import { categorizeAbility } from '../utils/abilities';
+import { unitTotalWounds } from '../utils/units';
 import { keyForAbility } from '../types/customization';
 import { supabase } from '../lib/supabase';
 import {
@@ -26,6 +29,9 @@ import {
 } from '../utils/warRoomClock';
 import AbilityCard from '../components/organisms/AbilityCard';
 import PhaseSelector from '../components/organisms/PhaseSelector';
+import WizardSection from '../components/organisms/WizardSection';
+import PriestSection from '../components/organisms/PriestSection';
+import UnitSection from '../components/organisms/UnitSection';
 import { colors, radii } from '../theme/tokens';
 import { useResponsive, getContentMaxWidth } from '../utils/responsive';
 
@@ -85,11 +91,26 @@ function abilitiesForRole(
   });
 }
 
+type AbilityCategory = 'spell' | 'prayer' | 'command' | 'passive_unit' | 'passive_terrain';
+const categoryOrder: Record<AbilityCategory, number> = { spell: 0, prayer: 1, command: 2, passive_unit: 3, passive_terrain: 4 };
+const categoryLabels: Record<AbilityCategory, string> = {
+  spell: 'SPELLS', prayer: 'PRAYERS', command: 'COMMANDS',
+  passive_unit: 'UNIT ABILITIES', passive_terrain: 'TERRAIN ABILITIES',
+};
+
 function groupByPhase(abilities: Ability[]) {
-  return PHASES.map((phase) => ({
-    phase,
-    items: abilities.filter((a) => a.phase === phase),
-  })).filter((s) => s.items.length > 0);
+  return PHASES.map((phase) => {
+    const items = abilities.filter((a) => a.phase === phase);
+    const bucketed: Record<AbilityCategory, Ability[]> = {
+      spell: [], prayer: [], command: [], passive_unit: [], passive_terrain: [],
+    };
+    items.forEach(a => bucketed[categorizeAbility(a)].push(a));
+    const categories = (Object.entries(bucketed) as [AbilityCategory, Ability[]][])
+      .filter(([, list]) => list.length > 0)
+      .sort(([a], [b]) => categoryOrder[a] - categoryOrder[b])
+      .map(([category, list]) => ({ category, items: list }));
+    return { phase, items, categories };
+  }).filter((s) => s.items.length > 0);
 }
 
 /**
@@ -116,14 +137,64 @@ export default function WarRoomScreen({
   const myJson = iAmPlayer1 ? room.player1ArmyJson : room.player2ArmyJson;
   const oppJson = iAmPlayer1 ? room.player2ArmyJson : room.player1ArmyJson;
 
-  const myAbilities = useMemo(
-    () => (myJson ? parseAbilitiesFromJSON(myJson).abilities : []),
+  const myParsed = useMemo(
+    () => myJson ? parseAbilitiesFromJSON(myJson) : { abilities: [], wizards: [], priests: [], units: [] as Unit[] },
     [myJson]
   );
-  const oppAbilities = useMemo(
-    () => (oppJson ? parseAbilitiesFromJSON(oppJson).abilities : []),
+  const oppParsed = useMemo(
+    () => oppJson ? parseAbilitiesFromJSON(oppJson) : { abilities: [], wizards: [], priests: [], units: [] as Unit[] },
     [oppJson]
   );
+
+  const myAbilities = myParsed.abilities;
+  const oppAbilities = oppParsed.abilities;
+  const myUnits = myParsed.units;
+  const myWizards = myParsed.wizards;
+  const myPriests = myParsed.priests;
+  const oppWizards = oppParsed.wizards;
+  const oppPriests = oppParsed.priests;
+
+  // Ephemeral wound/destroyed state for MY units only.
+  const [myUnitStates, setMyUnitStates] = useState<Map<string, UnitState>>(new Map());
+
+  const adjustMyUnitWounds = useCallback((unitId: string, delta: number) => {
+    const unit = myUnits.find(u => u.id === unitId);
+    if (!unit) return;
+    const total = unitTotalWounds(unit);
+    setMyUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      const wounds = total > 0
+        ? Math.max(0, Math.min(total, cur.wounds + delta))
+        : Math.max(0, cur.wounds + delta);
+      next.set(unitId, { wounds, destroyed: total > 0 ? wounds >= total : cur.destroyed });
+      return next;
+    });
+  }, [myUnits]);
+
+  const toggleMyUnitDestroyed = useCallback((unitId: string) => {
+    const unit = myUnits.find(u => u.id === unitId);
+    if (!unit) return;
+    const total = unitTotalWounds(unit);
+    setMyUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      next.set(unitId, cur.destroyed
+        ? { wounds: 0, destroyed: false }
+        : { wounds: total > 0 ? total : cur.wounds, destroyed: true }
+      );
+      return next;
+    });
+  }, [myUnits]);
+
+  const toggleMyUnitSummoned = useCallback((unitId: string) => {
+    setMyUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      next.set(unitId, { wounds: 0, destroyed: false, summoned: !cur.summoned });
+      return next;
+    });
+  }, []);
 
   // Synced used-state, keyed by `${ownerId}::${abilityKey}`.
   const [usedMap, setUsedMap] = useState<Map<string, boolean>>(new Map());
@@ -364,9 +435,27 @@ export default function WarRoomScreen({
     role: TurnRole,
     interactive: boolean,
     headerTitle: string,
-    showOnlineDot: boolean
+    showOnlineDot: boolean,
+    colOpts?: {
+      wizards?: typeof myWizards;
+      priests?: typeof myPriests;
+      units?: Unit[];
+      terrain?: Unit[];
+      manifestations?: Unit[];
+      unitStates?: Map<string, UnitState>;
+      onWoundsChange?: (id: string, delta: number) => void;
+      onToggleDestroyed?: (id: string) => void;
+      onToggleSummoned?: (id: string) => void;
+    }
   ) {
     const sections = groupByPhase(columnAbilities);
+    const { wizards = [], priests = [], units = [], terrain = [], manifestations = [],
+      unitStates = new Map(), onWoundsChange, onToggleDestroyed, onToggleSummoned } = colOpts ?? {};
+
+    const destroyedTotal = units.reduce(
+      (n, u) => n + (unitStates.get(u.id)?.destroyed ? 1 : 0), 0
+    );
+
     return (
       <View style={styles.column}>
         <View style={styles.columnHeader}>
@@ -387,28 +476,60 @@ export default function WarRoomScreen({
           </View>
         </View>
 
+        {/* Caster summary */}
+        {(wizards.length > 0 || priests.length > 0) && (
+          <View style={styles.castersRow}>
+            {wizards.length > 0 && <WizardSection wizards={wizards} />}
+            {priests.length > 0 && <PriestSection priests={priests} />}
+          </View>
+        )}
+
+        {/* Unit section (my column only — interactive) */}
+        {(units.length > 0 || manifestations.length > 0 || terrain.length > 0) && onWoundsChange && (
+          <UnitSection
+            units={units}
+            terrain={terrain}
+            manifestations={manifestations}
+            unitsTotal={units.length}
+            destroyedTotal={destroyedTotal}
+            unitStates={unitStates}
+            onUnitWoundsChange={onWoundsChange}
+            onToggleUnitDestroyed={onToggleDestroyed ?? noop}
+            onToggleUnitSummoned={onToggleSummoned ?? noop}
+            horizontalPadding={0}
+            cardColumns={1}
+          />
+        )}
+
         {sections.length === 0 ? (
           <Text style={styles.empty}>
-            Nothing usable {role === 'active' ? 'this turn' : 'on the opponent’s turn'}
+            Nothing usable {role === 'active' ? 'this turn' : "on the opponent's turn"}
             {viewPhase ? ' in this phase' : ''}.
           </Text>
         ) : (
           sections.map((section) => (
             <View key={section.phase} style={styles.section}>
               <Text style={styles.phaseLabel}>{section.phase}</Text>
-              {section.items.map((ability, i) => {
-                const key = keyForAbility(ability);
-                const used = ownerId ? usedMap.get(stateKey(ownerId, key)) ?? false : false;
-                const display: Ability = { ...ability, used };
-                return (
-                  <View key={`${ability.id}-${i}`} style={styles.cardWrap}>
-                    <AbilityCard
-                      ability={display}
-                      onToggleUsed={interactive ? () => toggleMine(key) : noop}
-                    />
-                  </View>
-                );
-              })}
+              {section.categories.map(cat => (
+                <View key={cat.category}>
+                  {section.categories.length > 1 && (
+                    <Text style={styles.categoryLabel}>{categoryLabels[cat.category]}</Text>
+                  )}
+                  {cat.items.map((ability, i) => {
+                    const key = keyForAbility(ability);
+                    const used = ownerId ? usedMap.get(stateKey(ownerId, key)) ?? false : false;
+                    const display: Ability = { ...ability, used };
+                    return (
+                      <View key={`${ability.id}-${i}`} style={styles.cardWrap}>
+                        <AbilityCard
+                          ability={display}
+                          onToggleUsed={interactive ? () => toggleMine(key) : noop}
+                        />
+                      </View>
+                    );
+                  })}
+                </View>
+              ))}
             </View>
           ))
         )}
@@ -531,16 +652,37 @@ export default function WarRoomScreen({
           { maxWidth: contentMaxWidth, paddingHorizontal: padding },
         ]}
       >
-        {sideBySide ? (
-          <View style={styles.columnsRow}>
-            {renderColumn(myColumn, myId, myRole, true, 'You', false)}
-            {renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true)}
-          </View>
-        ) : side === 'mine' ? (
-          renderColumn(myColumn, myId, myRole, true, 'You', false)
-        ) : (
-          renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true)
-        )}
+        {(() => {
+          const myUnitsSplit = {
+            units: myUnits.filter(u => !u.isTerrain && !u.isManifestation),
+            terrain: myUnits.filter(u => u.isTerrain && !u.isManifestation),
+            manifestations: myUnits.filter(u => u.isManifestation),
+          };
+          const myColOpts = {
+            wizards: myWizards,
+            priests: myPriests,
+            ...myUnitsSplit,
+            unitStates: myUnitStates,
+            onWoundsChange: adjustMyUnitWounds,
+            onToggleDestroyed: toggleMyUnitDestroyed,
+            onToggleSummoned: toggleMyUnitSummoned,
+          };
+          const oppColOpts = {
+            wizards: oppWizards,
+            priests: oppPriests,
+          };
+
+          return sideBySide ? (
+            <View style={styles.columnsRow}>
+              {renderColumn(myColumn, myId, myRole, true, 'You', false, myColOpts)}
+              {renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true, oppColOpts)}
+            </View>
+          ) : side === 'mine' ? (
+            renderColumn(myColumn, myId, myRole, true, 'You', false, myColOpts)
+          ) : (
+            renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true, oppColOpts)
+          );
+        })()}
       </ScrollView>
     </View>
   );
@@ -766,6 +908,12 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
+  castersRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+    flexWrap: 'wrap',
+  },
   section: {
     marginTop: 14,
   },
@@ -776,6 +924,15 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 8,
+  },
+  categoryLabel: {
+    color: '#9DB0CF',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginTop: 10,
+    marginBottom: 6,
   },
   cardWrap: {
     marginBottom: 14,
