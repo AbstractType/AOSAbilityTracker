@@ -432,10 +432,15 @@ export default function AbilityTrackerScreen({
       const visible = activePhase
         ? real.filter((u) => unitRelevantToPhase(u, activePhase, abilityPhasesBySource.get(u.name)))
         : real;
+      // Terrain doesn't fight/shoot, so it's shown only when it actually has an
+      // ability in the active phase (not the combat=all / shooting rules).
+      const visibleTerrain = activePhase
+        ? terrain.filter((t) => !!abilityPhasesBySource.get(t.name)?.has(activePhase))
+        : terrain;
       const destroyed = real.reduce((n, u) => n + (unitStates.get(u.id)?.destroyed ? 1 : 0), 0);
       return {
         realUnits: real,
-        terrainUnits: terrain,
+        terrainUnits: visibleTerrain,
         manifestationUnits: manifest,
         visibleUnits: visible,
         destroyedUnitCount: destroyed,

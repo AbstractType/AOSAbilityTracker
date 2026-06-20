@@ -567,29 +567,33 @@ function mapTimingToPhase(timing: string): Phase | null {
 }
 
 /**
- * Maps the BattleScribe ability "Color" attribute to the corresponding game phase.
- * AoS 4.0 uses a color-coded system where each ability is tagged with the phase it
- * primarily relates to. Used for passives that don't have explicit timing text.
+ * Maps a passive ability's "Color" attribute to a game phase (used only when
+ * the ability has no explicit timing). The mapping was calibrated empirically:
+ * for abilities that DO carry a timing, we cross-referenced their colour against
+ * the timing-derived phase. That showed the phase colours are Yellow→Hero,
+ * Gray→Movement, Orange→Charge, Red→Combat, Purple→End — and that Green is NOT a
+ * phase colour at all (no timed ability is ever Green; it only tags "defensive"
+ * passives, which are most relevant in the Combat phase).
  *
  * - Yellow  → Hero Phase
- * - Green   → Movement Phase
+ * - Gray    → Movement Phase
  * - Blue    → Shooting Phase
  * - Orange  → Charge Phase
  * - Red     → Combat Phase
+ * - Green   → Combat Phase (defensive passives, e.g. ward-in-combat / shrug-off)
  * - Purple  → End of Turn
- * - Gray    → Start of Turn
  * - Black   → Hero Phase (default — Black = army-wide/special, no specific phase)
  */
 function mapColorToPhase(color: string): Phase | null {
   if (!color) return null;
   const c = color.toLowerCase();
   if (c === 'yellow') return 'Hero Phase';
-  if (c === 'green') return 'Movement Phase';
+  if (c === 'gray' || c === 'grey') return 'Movement Phase';
   if (c === 'blue') return 'Shooting Phase';
   if (c === 'orange') return 'Charge Phase';
   if (c === 'red') return 'Combat Phase';
+  if (c === 'green') return 'Combat Phase'; // defensive passives → most relevant in combat
   if (c === 'purple') return 'End of Turn';
-  if (c === 'gray' || c === 'grey') return 'Start of Turn';
   if (c === 'black') return 'Hero Phase'; // Special / army-wide passives default to Hero Phase
   return null;
 }
