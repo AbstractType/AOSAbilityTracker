@@ -15,6 +15,12 @@ interface UnitCardProps {
   onWoundsChange: (delta: number) => void;
   /** Toggle destroyed / revive. */
   onToggleDestroyed: () => void;
+  /** This is a manifestation — summoned on demand (details hidden until then). */
+  summonable?: boolean;
+  /** Whether the manifestation is currently summoned. */
+  summoned?: boolean;
+  /** Toggle summoned / unsummoned. */
+  onToggleSummoned?: () => void;
 }
 
 const HEADER_BG = '#15203A';
@@ -31,6 +37,9 @@ export default function UnitCard({
   destroyed,
   onWoundsChange,
   onToggleDestroyed,
+  summonable,
+  summoned,
+  onToggleSummoned,
 }: UnitCardProps) {
   const { scaleFont, select } = useResponsive();
 
@@ -39,6 +48,35 @@ export default function UnitCard({
   const remaining = Math.max(0, total - wounds);
   const ranged = unit.weapons.filter((w) => w.kind === 'ranged');
   const melee = unit.weapons.filter((w) => w.kind === 'melee');
+
+  // A manifestation that hasn't been summoned shows only its name + a Summon
+  // button — its stats, weapons and abilities stay hidden until it's on the table.
+  if (summonable && !summoned) {
+    return (
+      <View style={[styles.card, styles.cardNotSummoned]}>
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <Text
+              style={[styles.name, { fontSize: scaleFont(select({ mobile: 15, default: 17 })) }]}
+              numberOfLines={2}
+            >
+              {unit.name}
+            </Text>
+            <View style={styles.manifestTag}>
+              <Text style={styles.manifestTagText}>MANIFESTATION</Text>
+            </View>
+          </View>
+          {unit.points !== undefined && <Text style={styles.points}>{unit.points} pts</Text>}
+        </View>
+        <View style={styles.summonRow}>
+          <Text style={styles.notSummonedHint}>Not summoned</Text>
+          <TouchableOpacity style={[styles.destroyBtn, styles.summonBtn]} onPress={onToggleSummoned}>
+            <Text style={styles.destroyBtnText}>Summon</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.card, destroyed && styles.cardDestroyed]}>
@@ -61,6 +99,11 @@ export default function UnitCard({
               <Text style={styles.reinforcedTagText}>⚑ REINFORCED</Text>
             </View>
           )}
+          {summonable && summoned && (
+            <View style={styles.summonedTag}>
+              <Text style={styles.summonedTagText}>✦ SUMMONED</Text>
+            </View>
+          )}
         </View>
         <View style={styles.headerRight}>
           {unit.points !== undefined && <Text style={styles.points}>{unit.points} pts</Text>}
@@ -75,7 +118,11 @@ export default function UnitCard({
         <Stat label="MOVE" value={unit.move} />
         <Stat label="HEALTH" value={unit.health} />
         <Stat label="SAVE" value={unit.save} />
-        <Stat label="CONTROL" value={unit.control} />
+        {unit.banishment ? (
+          <Stat label="BANISH" value={unit.banishment} />
+        ) : (
+          <Stat label="CONTROL" value={unit.control} />
+        )}
         {unit.ward ? <Stat label="WARD" value={unit.ward} /> : null}
       </View>
 
@@ -122,12 +169,21 @@ export default function UnitCard({
         ) : (
           <Text style={styles.woundsLabel}>{destroyed ? 'Destroyed' : 'On the battlefield'}</Text>
         )}
-        <TouchableOpacity
-          style={[styles.destroyBtn, destroyed ? styles.reviveBtn : styles.killBtn]}
-          onPress={onToggleDestroyed}
-        >
-          <Text style={styles.destroyBtnText}>{destroyed ? 'Revive' : 'Destroy'}</Text>
-        </TouchableOpacity>
+        {summonable ? (
+          <TouchableOpacity
+            style={[styles.destroyBtn, styles.unsummonBtn]}
+            onPress={onToggleSummoned}
+          >
+            <Text style={styles.destroyBtnText}>Unsummon</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[styles.destroyBtn, destroyed ? styles.reviveBtn : styles.killBtn]}
+            onPress={onToggleDestroyed}
+          >
+            <Text style={styles.destroyBtnText}>{destroyed ? 'Revive' : 'Destroy'}</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {destroyed && (
@@ -417,6 +473,52 @@ const styles = StyleSheet.create({
   },
   reviveBtn: {
     backgroundColor: colors.castingGreen,
+  },
+  summonBtn: {
+    backgroundColor: '#3F66D6',
+  },
+  unsummonBtn: {
+    backgroundColor: '#4C5775',
+  },
+  // ---- manifestation (summon) ----
+  cardNotSummoned: {
+    borderStyle: 'dashed',
+  },
+  manifestTag: {
+    backgroundColor: '#6D4FA3',
+    borderRadius: radii.sm,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  manifestTagText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  summonedTag: {
+    backgroundColor: '#1E7A6E',
+    borderRadius: radii.sm,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  summonedTagText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  summonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  notSummonedHint: {
+    color: colors.textCardMuted,
+    fontSize: 12,
+    fontStyle: 'italic',
   },
   destroyBtnText: {
     color: '#fff',

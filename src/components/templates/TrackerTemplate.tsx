@@ -25,18 +25,21 @@ interface TrackerTemplateProps {
   abilities: Ability[];
   wizards: Wizard[];
   priests: Priest[];
-  /** Phase-visible non-terrain units (the grid). */
+  /** Phase-visible non-terrain, non-manifestation units (the grid). */
   unitsVisible: Unit[];
   /** Terrain pieces, shown in their own subsection. */
   terrain: Unit[];
-  /** Total non-terrain units in the army (for the "n of total" count). */
+  /** Manifestations, shown in their own subsection (summoned on demand). */
+  manifestations: Unit[];
+  /** Total real units in the army (for the "n of total" count). */
   unitsTotal: number;
-  /** How many non-terrain units are destroyed (header badge). */
+  /** How many real units are destroyed (header badge). */
   destroyedTotal: number;
-  /** Ephemeral per-unit combat state (wounds/destroyed), keyed by unit id. */
+  /** Ephemeral per-unit combat state (wounds/destroyed/summoned), keyed by unit id. */
   unitStates: Map<string, UnitState>;
   onUnitWoundsChange: (unitId: string, delta: number) => void;
   onToggleUnitDestroyed: (unitId: string) => void;
+  onToggleUnitSummoned: (unitId: string) => void;
   /** Source-unit names that are fully destroyed (drives the "unusable" marker). */
   destroyedSources: Set<string>;
   visiblePhases: Phase[];
@@ -214,15 +217,17 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
           cardColumns={cardColumns}
           destroyedSources={props.destroyedSources}
           header={
-            props.unitsTotal > 0 || props.terrain.length > 0 ? (
+            props.unitsTotal > 0 || props.terrain.length > 0 || props.manifestations.length > 0 ? (
               <UnitSection
                 units={props.unitsVisible}
                 terrain={props.terrain}
+                manifestations={props.manifestations}
                 unitsTotal={props.unitsTotal}
                 destroyedTotal={props.destroyedTotal}
                 unitStates={props.unitStates}
                 onUnitWoundsChange={props.onUnitWoundsChange}
                 onToggleUnitDestroyed={props.onToggleUnitDestroyed}
+                onToggleUnitSummoned={props.onToggleUnitSummoned}
                 horizontalPadding={horizontalPadding}
                 cardColumns={cardColumns}
               />

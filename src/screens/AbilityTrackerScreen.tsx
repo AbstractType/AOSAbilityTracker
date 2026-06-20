@@ -133,6 +133,17 @@ export default function AbilityTrackerScreen({
     [units]
   );
 
+  // Summon ⇄ unsummon a manifestation. Either way it starts fresh (no wounds /
+  // not destroyed); summoning reveals its details + abilities.
+  const toggleUnitSummoned = useCallback((unitId: string) => {
+    setUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      next.set(unitId, { wounds: 0, destroyed: false, summoned: !cur.summoned });
+      return next;
+    });
+  }, []);
+
   // Destroy ⇄ revive. Destroy fills the wound pool (if trackable); revive clears
   // wounds and the flag.
   const toggleUnitDestroyed = useCallback(
@@ -214,6 +225,17 @@ export default function AbilityTrackerScreen({
     return filteredAbilities.filter(a => !customizations.get(keyForAbility(a))?.hidden);
   }, [filteredAbilities, customizations, showHidden]);
 
+  // Manifestations hide their own abilities until summoned. Their abilities are
+  // sourced to the manifestation's name, so collect the names of any that aren't
+  // summoned and drop those abilities from the list.
+  const hiddenManifestationSources = useMemo(() => {
+    const set = new Set<string>();
+    for (const u of units) {
+      if (u.isManifestation && !unitStates.get(u.id)?.summoned) set.add(u.name);
+    }
+    return set;
+  }, [units, unitStates]);
+
   // Lore gating: a spell-lore ability needs a living wizard; a prayer-lore
   // ability needs a living priest. When every relevant caster is destroyed (or
   // the army never had one), those lore abilities can't be used, so drop them
@@ -225,12 +247,14 @@ export default function AbilityTrackerScreen({
     const livingWizard = units.some(u => u.isWizard && !unitStates.get(u.id)?.destroyed);
     const livingPriest = units.some(u => u.isPriest && !unitStates.get(u.id)?.destroyed);
     return visibleAbilities.filter(a => {
+      // Un-summoned manifestation's own abilities are hidden until summoned.
+      if (a.source && hiddenManifestationSources.has(a.source)) return false;
       const loreSourced = !!a.source && !unitNames.has(a.source);
       if (loreSourced && a.isSpell && !livingWizard) return false;
       if (loreSourced && a.isPrayer && !livingPriest) return false;
       return true;
     });
-  }, [visibleAbilities, units, unitStates]);
+  }, [visibleAbilities, units, unitStates, hiddenManifestationSources]);
 
   // Group (filtered + hide-filtered) abilities by phase. Custom-ordered
   // abilities come first (lowest sortOrder), then the rest in natural
@@ -397,23 +421,26 @@ export default function AbilityTrackerScreen({
     return map;
   }, [abilities]);
 
-  // Split terrain out (it's not a unit), and when a phase is active, narrow the
-  // unit grid to those relevant to that phase (see unitRelevantToPhase). With no
-  // active phase we show every non-terrain unit.
-  const { nonTerrainUnits, terrainUnits, visibleUnits, destroyedUnitCount } = useMemo(() => {
-    const terrain = units.filter((u) => u.isTerrain);
-    const real = units.filter((u) => !u.isTerrain);
-    const visible = activePhase
-      ? real.filter((u) => unitRelevantToPhase(u, activePhase, abilityPhasesBySource.get(u.name)))
-      : real;
-    const destroyed = real.reduce((n, u) => n + (unitStates.get(u.id)?.destroyed ? 1 : 0), 0);
-    return {
-      nonTerrainUnits: real,
-      terrainUnits: terrain,
-      visibleUnits: visible,
-      destroyedUnitCount: destroyed,
-    };
-  }, [units, activePhase, abilityPhasesBySource, unitStates]);
+  // Split out terrain (not a unit) and manifestations (summoned separately), and
+  // when a phase is active narrow the unit grid to those relevant to that phase
+  // (see unitRelevantToPhase). With no active phase we show every real unit.
+  const { realUnits, terrainUnits, manifestationUnits, visibleUnits, destroyedUnitCount } =
+    useMemo(() => {
+      const manifest = units.filter((u) => u.isManifestation);
+      const terrain = units.filter((u) => u.isTerrain && !u.isManifestation);
+      const real = units.filter((u) => !u.isTerrain && !u.isManifestation);
+      const visible = activePhase
+        ? real.filter((u) => unitRelevantToPhase(u, activePhase, abilityPhasesBySource.get(u.name)))
+        : real;
+      const destroyed = real.reduce((n, u) => n + (unitStates.get(u.id)?.destroyed ? 1 : 0), 0);
+      return {
+        realUnits: real,
+        terrainUnits: terrain,
+        manifestationUnits: manifest,
+        visibleUnits: visible,
+        destroyedUnitCount: destroyed,
+      };
+    }, [units, activePhase, abilityPhasesBySource, unitStates]);
 
   // Source-unit names that are *fully* destroyed: every unit sharing that name
   // is destroyed. An ability whose `source` matches is then marked unusable. We
@@ -446,11 +473,13 @@ export default function AbilityTrackerScreen({
         priests={priests}
         unitsVisible={visibleUnits}
         terrain={terrainUnits}
-        unitsTotal={nonTerrainUnits.length}
+        manifestations={manifestationUnits}
+        unitsTotal={realUnits.length}
         destroyedTotal={destroyedUnitCount}
         unitStates={unitStates}
         onUnitWoundsChange={adjustUnitWounds}
         onToggleUnitDestroyed={toggleUnitDestroyed}
+        onToggleUnitSummoned={toggleUnitSummoned}
         destroyedSources={destroyedSources}
         visiblePhases={visiblePhases}
         activePhase={activePhase}

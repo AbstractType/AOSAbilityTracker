@@ -117,8 +117,11 @@ export function parseAbilitiesFromJSON(jsonString: string): ParsedRosterData {
         // Check if this is a selection with profiles (abilities)
         if (obj.profiles && Array.isArray(obj.profiles)) {
           obj.profiles.forEach((profile: AbilityProfile) => {
-            // Use the group field if available (for spells in spell lores), otherwise use parent name
-            const source = obj.group || currentParent;
+            // A unit's abilities belong to that unit, so source them to its name
+            // even when the unit sits inside a lore group (e.g. manifestations,
+            // which are `type:"unit"` but carry the lore's `group`). The group is
+            // only the right source for lore *spells* (`type:"upgrade"` choices).
+            const source = obj.type === 'unit' ? currentParent : obj.group || currentParent;
             const ability = parseAbility(profile, idCounter.toString(), source);
             if (ability && !abilitiesMap.has(ability.name)) {
               abilitiesMap.set(ability.name, ability);
@@ -276,19 +279,28 @@ function buildUnit(selection: any, id: string): Unit | null {
   const name: string | undefined = selection.name;
   if (!name) return null;
 
-  // Stat line from the unit's own "Unit" profile.
+  // Stat line from the unit's own stat profile. Regular units use typeName
+  // "Unit" (Move/Health/Save/Control); manifestations use "Manifestation"
+  // (Move/Health/Save/Banishment instead of Control).
   let move: string | undefined;
   let health: string | undefined;
   let save: string | undefined;
   let control: string | undefined;
-  const statProfile = (selection.profiles || []).find(
-    (p: any) => typeof p?.typeName === 'string' && p.typeName.trim().toLowerCase() === 'unit'
-  );
+  let banishment: string | undefined;
+  const statProfile = (selection.profiles || []).find((p: any) => {
+    const tn = typeof p?.typeName === 'string' ? p.typeName.trim().toLowerCase() : '';
+    return tn === 'unit' || tn === 'manifestation';
+  });
+  let statIsManifestation = false;
   if (statProfile) {
     move = charByName(statProfile.characteristics, ['move']);
     health = charByName(statProfile.characteristics, ['health', 'wounds']);
     save = charByName(statProfile.characteristics, ['save']);
     control = charByName(statProfile.characteristics, ['control']);
+    banishment = charByName(statProfile.characteristics, ['banishment', 'banish']);
+    statIsManifestation =
+      typeof statProfile.typeName === 'string' &&
+      statProfile.typeName.trim().toLowerCase() === 'manifestation';
   }
 
   // Weapons (deduped by name) + model count, gathered from the whole subtree.
@@ -349,6 +361,7 @@ function buildUnit(selection: any, id: string): Unit | null {
   let isWizard = false;
   let isPriest = false;
   let isTerrain = false;
+  let isManifestation = statIsManifestation;
   if (Array.isArray(selection.categories)) {
     for (const cat of selection.categories) {
       const cn = cat?.name;
@@ -358,6 +371,7 @@ function buildUnit(selection: any, id: string): Unit | null {
       if (/^WIZARD\s*\(/i.test(cn)) isWizard = true;
       if (/^PRIEST\s*\(/i.test(cn)) isPriest = true;
       if (/terrain/i.test(cn)) isTerrain = true;
+      if (/manifestation/i.test(cn)) isManifestation = true;
     }
   }
 
@@ -373,12 +387,14 @@ function buildUnit(selection: any, id: string): Unit | null {
     health,
     save,
     control,
+    banishment,
     ward,
     weapons,
     isWizard,
     isPriest,
     reinforced,
     isTerrain,
+    isManifestation,
   };
 }
 

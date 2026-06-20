@@ -39,6 +39,8 @@ export interface Unit {
   health?: string;
   save?: string;
   control?: string;
+  /** Manifestations use Banishment in place of Control. */
+  banishment?: string;
   ward?: string;
   weapons: WeaponProfile[];
   /** Cross-links to the caster summary, for an optional badge on the card. */
@@ -48,6 +50,8 @@ export interface Unit {
   reinforced?: boolean;
   /** True for faction-terrain pieces — shown separately, not as a unit. */
   isTerrain?: boolean;
+  /** True for manifestations (summoned units) — shown separately, hidden until summoned. */
+  isManifestation?: boolean;
 }
 
 /**
@@ -59,4 +63,6 @@ export interface Unit {
 export interface UnitState {
   wounds: number;
   destroyed: boolean;
+  /** Manifestations only: whether it's currently summoned onto the battlefield. */
+  summoned?: boolean;
 }

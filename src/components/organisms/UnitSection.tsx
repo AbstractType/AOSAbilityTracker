@@ -10,14 +10,17 @@ interface UnitSectionProps {
   units: Unit[];
   /** Terrain pieces, shown in their own subsection (not phase-filtered). */
   terrain: Unit[];
-  /** Total non-terrain units in the army (for the "n of total" count). */
+  /** Manifestations, shown in their own subsection; summoned on demand. */
+  manifestations: Unit[];
+  /** Total real units in the army (for the "n of total" count). */
   unitsTotal: number;
-  /** How many non-terrain units are destroyed (header badge). */
+  /** How many real units are destroyed (header badge). */
   destroyedTotal: number;
   /** Ephemeral per-unit combat state, keyed by unit id. */
   unitStates: Map<string, UnitState>;
   onUnitWoundsChange: (unitId: string, delta: number) => void;
   onToggleUnitDestroyed: (unitId: string) => void;
+  onToggleUnitSummoned: (unitId: string) => void;
   horizontalPadding: number;
   cardColumns: number;
 }
@@ -32,17 +35,19 @@ const EMPTY_STATE: UnitState = { wounds: 0, destroyed: false };
 export default function UnitSection({
   units,
   terrain,
+  manifestations,
   unitsTotal,
   destroyedTotal,
   unitStates,
   onUnitWoundsChange,
   onToggleUnitDestroyed,
+  onToggleUnitSummoned,
   horizontalPadding,
   cardColumns,
 }: UnitSectionProps) {
   const [collapsed, setCollapsed] = useState(true);
 
-  const renderGrid = (list: Unit[]) => (
+  const renderGrid = (list: Unit[], summonable = false) => (
     <View style={styles.masonryGrid}>
       {distributeIntoColumns(list, cardColumns).map((columnItems, colIdx) => (
         <View key={colIdx} style={styles.masonryColumn}>
@@ -56,12 +61,20 @@ export default function UnitSection({
                 destroyed={state.destroyed}
                 onWoundsChange={(delta) => onUnitWoundsChange(unit.id, delta)}
                 onToggleDestroyed={() => onToggleUnitDestroyed(unit.id)}
+                summonable={summonable}
+                summoned={!!state.summoned}
+                onToggleSummoned={() => onToggleUnitSummoned(unit.id)}
               />
             );
           })}
         </View>
       ))}
     </View>
+  );
+
+  const summonedCount = manifestations.reduce(
+    (n, u) => n + (unitStates.get(u.id)?.summoned ? 1 : 0),
+    0
   );
 
   // "Units (8)" normally; "Units (2 of 8)" when a phase narrows the list.
@@ -86,8 +99,18 @@ export default function UnitSection({
         <>
           {units.length > 0 ? (
             renderGrid(units)
-          ) : (
+          ) : unitsTotal > 0 ? (
             <Text style={styles.emptyNote}>No units act in this phase.</Text>
+          ) : null}
+
+          {manifestations.length > 0 && (
+            <>
+              <Text style={styles.subHeading}>
+                Manifestations ({manifestations.length}
+                {summonedCount > 0 ? `, ${summonedCount} summoned` : ''})
+              </Text>
+              {renderGrid(manifestations, true)}
+            </>
           )}
 
           {terrain.length > 0 && (
