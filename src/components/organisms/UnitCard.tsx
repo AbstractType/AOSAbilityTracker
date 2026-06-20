@@ -130,7 +130,13 @@ export default function UnitCard({
       {unit.keywords && unit.keywords.length > 0 && (
         <View style={styles.keywordsRow}>
           {unit.keywords
-            .filter(kw => kw.toLowerCase() !== 'manifestation')
+            .filter(kw => {
+              const lower = kw.toLowerCase();
+              // Filter out manifestation and upgrade-related keywords
+              if (lower === 'manifestation') return false;
+              if (lower.includes('regimental')) return false;
+              return true;
+            })
             .map((kw, idx) => (
             <View key={idx} style={styles.keywordTag}>
               <Text style={styles.keywordText}>{kw}</Text>
