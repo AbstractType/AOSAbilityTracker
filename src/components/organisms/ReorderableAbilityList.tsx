@@ -145,9 +145,10 @@ function SortablePhase({
   // DOM elements for every card, captured once on grant for hit-testing.
   const domNodesRef = useRef<Array<HTMLElement | null>>([]);
 
-  // The raw DOM element of the card currently being dragged.
-  // We manipulate its style directly to avoid React re-render lag.
-  const activeDomRef = useRef<HTMLElement | null>(null);
+  // A cloned ghost element appended to <body> during drag. Positioning it
+  // fixed in <body> keeps it completely outside every overflow container so
+  // it can travel anywhere on screen without being clipped.
+  const ghostEl = useRef<HTMLElement | null>(null);
 
   const grantPointer = useRef({ x: 0, y: 0 });
   const fromRef = useRef(0);
@@ -171,9 +172,6 @@ function SortablePhase({
     grantPointer.current = { x: g.x0, y: g.y0 };
 
     // On web: resolve every card's raw DOM element once per drag.
-    // We use these for two things:
-    //   1. getBoundingClientRect() hit-testing in onMove (always viewport-relative)
-    //   2. Direct style mutation on the active card for zero-lag positioning
     if (Platform.OS === 'web') {
       try {
         const { findDOMNode } = require('react-dom');
@@ -186,12 +184,28 @@ function SortablePhase({
 
         const activeDom = nodes[from];
         if (activeDom) {
-          activeDom.style.willChange = 'transform';
-          activeDom.style.zIndex = '999';
-          activeDom.style.filter = 'drop-shadow(0 10px 25px rgba(0,0,0,0.6))';
-          activeDom.style.transform = 'scale(1.05)';
-          activeDom.style.cursor = 'grabbing';
-          activeDomRef.current = activeDom;
+          // Snapshot the card's current viewport rect BEFORE any React
+          // re-render can change its appearance.
+          const rect = activeDom.getBoundingClientRect();
+
+          // Clone the card and mount it directly on <body> as a
+          // position:fixed ghost. This places it outside every
+          // overflow:hidden ancestor, so it can move anywhere on screen.
+          const ghost = activeDom.cloneNode(true) as HTMLElement;
+          ghost.style.position = 'fixed';
+          ghost.style.left = `${rect.left}px`;
+          ghost.style.top = `${rect.top}px`;
+          ghost.style.width = `${rect.width}px`;
+          ghost.style.height = `${rect.height}px`;
+          ghost.style.margin = '0';
+          ghost.style.zIndex = '9999';
+          ghost.style.pointerEvents = 'none';
+          ghost.style.willChange = 'transform';
+          ghost.style.filter = 'drop-shadow(0 10px 25px rgba(0,0,0,0.6))';
+          ghost.style.transform = 'scale(1.05)';
+          ghost.style.cursor = 'grabbing';
+          document.body.appendChild(ghost);
+          ghostEl.current = ghost;
         }
       } catch { /* noop */ }
     }
@@ -202,10 +216,10 @@ function SortablePhase({
   };
 
   handlers.current.onMove = (_from, g) => {
-    // Synchronous direct DOM update — runs in the same event handler as the
-    // pointer event, so it paints on the very next frame with zero lag.
-    if (activeDomRef.current) {
-      activeDomRef.current.style.transform =
+    // Move the ghost synchronously. Because it's position:fixed in <body>,
+    // translate3d is in viewport space and matches g.dx/g.dy exactly.
+    if (ghostEl.current) {
+      ghostEl.current.style.transform =
         `translate3d(${g.dx}px, ${g.dy}px, 0) scale(1.05)`;
     }
 
@@ -271,14 +285,11 @@ function SortablePhase({
       }
     }
 
-    // Reset the dragged card's DOM styles before React re-renders.
-    if (activeDomRef.current) {
-      activeDomRef.current.style.transform = '';
-      activeDomRef.current.style.willChange = '';
-      activeDomRef.current.style.zIndex = '';
-      activeDomRef.current.style.filter = '';
-      activeDomRef.current.style.cursor = '';
-      activeDomRef.current = null;
+    // Remove the floating ghost — React handles restoring the original card
+    // by re-rendering it without the isActive styles.
+    if (ghostEl.current) {
+      ghostEl.current.parentNode?.removeChild(ghostEl.current);
+      ghostEl.current = null;
     }
 
     const from = fromRef.current;
