@@ -190,8 +190,8 @@ function SortablePhase({
           const rect = activeDom.getBoundingClientRect();
           const ghost = activeDom.cloneNode(true) as HTMLElement;
           ghost.style.position = 'fixed';
-          ghost.style.left = `${rect.left}px`;
-          ghost.style.top = `${rect.top}px`;
+          ghost.style.left = `${startClientX - rect.width / 2}px`;
+          ghost.style.top = `${startClientY - rect.height / 2}px`;
           ghost.style.width = `${rect.width}px`;
           ghost.style.height = `${rect.height}px`;
           ghost.style.margin = '0';
@@ -375,16 +375,11 @@ function DraggableCard({
         armedRef.current && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
       onMoveShouldSetPanResponderCapture: (_e, g) =>
         armedRef.current && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
-      onPanResponderGrant: (e, _g) => {
-        // Extract viewport-relative coordinates from the native event.
-        // These are in the same space as getBoundingClientRect(), so no
-        // conversion is needed when hit-testing against card rects.
-        const ne = e.nativeEvent as any;
-        const clientX: number =
-          ne?.clientX ?? ne?.pageX ?? ne?.touches?.[0]?.clientX ?? 0;
-        const clientY: number =
-          ne?.clientY ?? ne?.pageY ?? ne?.touches?.[0]?.clientY ?? 0;
-        handlersRef.current.onGrant(indexRef.current, clientX, clientY);
+      onPanResponderGrant: (_e, g) => {
+        // g.x0/y0 are pageX/pageY at grant time. Since this app uses a
+        // React Native ScrollView (not native page scroll), window.scrollX/Y
+        // are always 0, so pageX === clientX — same space as getBoundingClientRect().
+        handlersRef.current.onGrant(indexRef.current, g.x0, g.y0);
       },
       // Kept active (not removed) so PanResponder retains gesture ownership
       // and the ScrollView cannot steal the drag. Actual tracking is done
