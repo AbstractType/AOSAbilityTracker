@@ -21,68 +21,60 @@ interface PhaseSection {
 }
 
 interface ReorderableAbilityListProps {
-  /** Phase sections (already filtered + sorted) to reorder. */
   sections: PhaseSection[];
-  /** Per-ability customization map (drives note / hidden styling on cards). */
   customizations: Map<string, Customization>;
-  /** Max content width (same as the normal list so layout matches). */
   contentMaxWidth: number;
-  /** Horizontal padding inside the list. */
   horizontalPadding: number;
-  /** Columns for the masonry grid (same as the normal list). */
   cardColumns: number;
-  /**
-   * Commit a phase's new order. The screen does the optimistic update +
-   * Supabase persist + revert-on-error.
-   */
   onCommitPhaseOrder: (phase: Phase, reordered: Ability[]) => void;
 }
 
 const GAP = 14;
-// How long (ms) the user must hold a card before a move becomes a drag. Below
-// this, a finger-move is treated as a scroll — so the list still scrolls
-// normally and only a deliberate press-and-hold picks a card up.
-const HOLD_TO_DRAG_MS = 180;
+const HOLD_TO_DRAG_MS = 160;
 
 // ---------------------------------------------------------------------------
-// Wiggle animation (web): a subtle looping rotation on every card so it reads
-// as "draggable", like iOS home-screen edit mode. Injected once as real CSS
-// (far cheaper than driving dozens of JS-driven Animated loops). Three phase
-// variants keep neighbouring cards from wiggling in lockstep.
+// CSS injected once for web — wiggle animation, GPU-composited drag layer,
+// drop-target glow, and cursor states.
 // ---------------------------------------------------------------------------
-const WIGGLE_STYLE_ID = 'aos-reorder-wiggle';
-function injectWiggleCssOnce() {
+const STYLE_ID = 'aos-reorder-styles';
+function injectStylesOnce() {
   if (Platform.OS !== 'web' || typeof document === 'undefined') return;
-  if (document.getElementById(WIGGLE_STYLE_ID)) return;
+  if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
-  style.id = WIGGLE_STYLE_ID;
+  style.id = STYLE_ID;
   style.textContent = `
     @keyframes aosWiggle {
       0%   { transform: rotate(-1.4deg); }
       50%  { transform: rotate(1.4deg); }
       100% { transform: rotate(-1.4deg); }
     }
+    @keyframes aosDropGlow {
+      0%   { box-shadow: 0 0 0 0 rgba(91,169,255,0.55); }
+      60%  { box-shadow: 0 0 0 6px rgba(91,169,255,0.0); }
+      100% { box-shadow: 0 0 0 0 rgba(91,169,255,0.0); }
+    }
     [data-wiggle="0"] { animation: aosWiggle 0.30s ease-in-out infinite; animation-delay: 0s; }
     [data-wiggle="1"] { animation: aosWiggle 0.33s ease-in-out infinite; animation-delay: -0.11s; }
     [data-wiggle="2"] { animation: aosWiggle 0.28s ease-in-out infinite; animation-delay: -0.19s; }
+
+    [data-dragging="true"] {
+      will-change: transform;
+      cursor: grabbing !important;
+      filter: drop-shadow(0 8px 20px rgba(0,0,0,0.55));
+    }
+    [data-drop-target="true"] {
+      animation: aosDropGlow 0.9s ease-out infinite;
+      border-radius: 10px;
+      outline: 2px solid #5BA9FF;
+      outline-offset: 2px;
+      background: rgba(91,169,255,0.10);
+    }
+    [data-reorder] { cursor: grab; }
+    [data-reorder]:active { cursor: grabbing; }
   `;
   document.head.appendChild(style);
 }
 
-/**
- * ReorderableAbilityList — the drag-to-reorder view shown when the tracker is
- * in Reorder mode. It renders the SAME masonry grid as the normal list, but
- * every card wiggles to signal it's draggable, and each card can be
- * press-held and dragged to a new slot within its phase.
- *
- * Each phase is an independent sortable (`SortablePhase`), which structurally
- * enforces "within-phase only": there's no shared index space across phases,
- * so a card can never land in another phase's section.
- *
- * Hand-rolled with PanResponder + Animated (no gesture/animation libraries),
- * working on touch and mouse via React Native Web. Drop targeting measures
- * each card's on-screen rect at pickup and hit-tests the pointer against them.
- */
 export default function ReorderableAbilityList({
   sections,
   customizations,
@@ -91,10 +83,8 @@ export default function ReorderableAbilityList({
   cardColumns,
   onCommitPhaseOrder,
 }: ReorderableAbilityListProps) {
-  injectWiggleCssOnce();
+  injectStylesOnce();
 
-  // While any card is mid-drag, disable ScrollView scrolling so the parent pan
-  // doesn't fight the card drag on touch.
   const [dragging, setDragging] = useState(false);
 
   return (
@@ -132,15 +122,10 @@ export default function ReorderableAbilityList({
 }
 
 // ---------------------------------------------------------------------------
-// SortablePhase — one phase's independent masonry sortable
+// SortablePhase
 // ---------------------------------------------------------------------------
 
-interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+interface Rect { x: number; y: number; w: number; h: number; }
 
 interface SortablePhaseProps {
   phase: Phase;
@@ -164,22 +149,23 @@ function SortablePhase({
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [targetIndex, setTargetIndex] = useState<number | null>(null);
 
-  // Shared drag transform — only the active card reads these.
+  // Animated values — only the active card reads these.
   const drag = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const scale = useRef(new Animated.Value(1)).current;
 
-  // Per-card node refs (for measureInWindow) and their measured screen rects,
-  // both keyed by linear index.
   const nodeRefs = useRef<Array<View | null>>([]);
   const rectsRef = useRef<Array<Rect | null>>([]);
-  // Pointer screen position at pickup, so move-deltas map back to screen space.
   const grantPointer = useRef({ x: 0, y: 0 });
   const fromRef = useRef(0);
   const targetRef = useRef<number | null>(null);
   const snapshotRef = useRef<Ability[]>([]);
 
-  // Latest handlers in a ref so each card's once-created PanResponder always
-  // calls fresh closures (items/indices change across commits).
+  // rAF handle — we process at most one move per animation frame so React
+  // re-renders from setTargetIndex never pile up behind pointer events.
+  const rafRef = useRef<number | null>(null);
+  // Latest dx/dy for the pending rAF to read.
+  const pendingDelta = useRef({ dx: 0, dy: 0 });
+
   const handlers = useRef({
     onGrant: (_from: number, _g: PanResponderGestureState) => {},
     onMove: (_from: number, _g: PanResponderGestureState) => {},
@@ -192,8 +178,6 @@ function SortablePhase({
     targetRef.current = from;
     grantPointer.current = { x: g.x0, y: g.y0 };
 
-    // Snapshot every card's on-screen rect. measureInWindow is async but
-    // resolves within a frame — well before the user releases.
     rectsRef.current = [];
     nodeRefs.current.forEach((node, i) => {
       if (node && typeof (node as any).measureInWindow === 'function') {
@@ -215,31 +199,43 @@ function SortablePhase({
   };
 
   handlers.current.onMove = (_from, g) => {
+    // Update the dragged card position immediately — Animated.setValue is
+    // synchronous and cheap; no React re-render involved.
     drag.setValue({ x: g.dx, y: g.dy });
+    pendingDelta.current = { dx: g.dx, dy: g.dy };
 
-    const px = grantPointer.current.x + g.dx;
-    const py = grantPointer.current.y + g.dy;
-    const rects = rectsRef.current;
+    // Throttle the hit-test + setState to one call per animation frame so
+    // we don't schedule dozens of React reconciliations per pointer event.
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const { dx, dy } = pendingDelta.current;
+      const px = grantPointer.current.x + dx;
+      const py = grantPointer.current.y + dy;
+      const rects = rectsRef.current;
 
-    // Which card is the pointer currently over? That card's linear index is
-    // where the dragged card will be inserted on release.
-    let found: number | null = null;
-    for (let i = 0; i < rects.length; i++) {
-      const r = rects[i];
-      if (!r) continue;
-      if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
-        found = i;
-        break;
+      let found: number | null = null;
+      for (let i = 0; i < rects.length; i++) {
+        const r = rects[i];
+        if (!r) continue;
+        if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
+          found = i;
+          break;
+        }
       }
-    }
-    // Keep the last valid target if the pointer is momentarily in a gap.
-    if (found !== null && found !== targetRef.current) {
-      targetRef.current = found;
-      setTargetIndex(found);
-    }
+      if (found !== null && found !== targetRef.current) {
+        targetRef.current = found;
+        setTargetIndex(found);
+      }
+    });
   };
 
   handlers.current.onRelease = () => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+
     const from = fromRef.current;
     const to = targetRef.current;
 
@@ -257,9 +253,6 @@ function SortablePhase({
     }
   };
 
-  // Distribute LINEAR INDICES (not items) round-robin into columns so each
-  // card keeps a stable linear index for the drag math while rendering in the
-  // same masonry layout as the normal list.
   const columns = distributeIntoColumns(
     items.map((_, i) => i),
     cardColumns
@@ -291,9 +284,7 @@ function SortablePhase({
                   }
                   drag={drag}
                   scale={scale}
-                  setNodeRef={(node) => {
-                    nodeRefs.current[index] = node;
-                  }}
+                  setNodeRef={(node) => { nodeRefs.current[index] = node; }}
                   handlersRef={handlers}
                 />
               );
@@ -306,7 +297,7 @@ function SortablePhase({
 }
 
 // ---------------------------------------------------------------------------
-// DraggableCard — wiggling, press-hold-draggable wrapper around AbilityCard
+// DraggableCard
 // ---------------------------------------------------------------------------
 
 interface DraggableCardProps {
@@ -338,14 +329,9 @@ function DraggableCard({
   setNodeRef,
   handlersRef,
 }: DraggableCardProps) {
-  // Keep the current index readable from the once-created PanResponder so it
-  // stays correct after a commit shuffles indices.
   const indexRef = useRef(index);
   indexRef.current = index;
 
-  // Press-and-hold arming: only after holding HOLD_TO_DRAG_MS does a move turn
-  // into a drag. Quick swipes fall through to the ScrollView so the list still
-  // scrolls normally.
   const armedRef = useRef(false);
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -358,7 +344,6 @@ function DraggableCard({
 
   const pan = useRef(
     PanResponder.create({
-      // Don't claim on touch-down — let the press-hold timer decide.
       onStartShouldSetPanResponder: () => false,
       onStartShouldSetPanResponderCapture: () => {
         armedRef.current = false;
@@ -369,9 +354,9 @@ function DraggableCard({
         return false;
       },
       onMoveShouldSetPanResponder: (_e, g) =>
-        armedRef.current && (Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3),
+        armedRef.current && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
       onMoveShouldSetPanResponderCapture: (_e, g) =>
-        armedRef.current && (Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3),
+        armedRef.current && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
       onPanResponderGrant: (_e, g) => handlersRef.current.onGrant(indexRef.current, g),
       onPanResponderMove: (_e, g) => handlersRef.current.onMove(indexRef.current, g),
       onPanResponderRelease: () => {
@@ -384,7 +369,6 @@ function DraggableCard({
         armedRef.current = false;
         handlersRef.current.onRelease(indexRef.current);
       },
-      // Let the ScrollView take over (scroll) only while we're not armed.
       onPanResponderTerminationRequest: () => !armedRef.current,
     })
   ).current;
@@ -404,22 +388,22 @@ function DraggableCard({
           transform: activeTransform,
           zIndex: isActive ? 999 : 1,
           elevation: isActive ? 8 : 0,
-          opacity: isActive ? 0.97 : 1,
         },
       ]}
     >
       <View
-        // Wiggle on every idle card; pause it on the one being dragged.
-        dataSet={isActive ? undefined : { wiggle: String(index % 3) }}
-        style={[
-          { userSelect: 'none' } as any,
-          isDropTarget && styles.dropTarget,
-        ]}
+        {...({
+          dataSet: {
+            wiggle: isActive ? undefined : String(index % 3),
+            dragging: isActive ? 'true' : undefined,
+            'drop-target': isDropTarget ? 'true' : undefined,
+            reorder: 'true',
+          },
+        } as any)}
+        style={{ userSelect: 'none' } as any}
       >
         <AbilityCard
           ability={ability}
-          // No-op in reorder mode — tapping shouldn't toggle used while
-          // rearranging.
           onToggleUsed={noop}
           note={note}
           hidden={hidden}
@@ -431,10 +415,6 @@ function DraggableCard({
 
 function noop() {}
 
-/**
- * Splits an ordered list into N columns using round-robin distribution —
- * identical to the normal AbilityList masonry so the layouts match exactly.
- */
 function distributeIntoColumns<T>(items: T[], columnCount: number): T[][] {
   const safeCount = Math.max(1, columnCount);
   const columns: T[][] = Array.from({ length: safeCount }, () => []);
@@ -501,12 +481,5 @@ const styles = StyleSheet.create({
   },
   cardOuter: {
     width: '100%',
-  },
-  dropTarget: {
-    borderRadius: radii.lg,
-    borderWidth: 2,
-    borderColor: '#5BA9FF',
-    // Tints the slot the dragged card will drop into.
-    backgroundColor: 'rgba(91, 169, 255, 0.12)',
   },
 });
