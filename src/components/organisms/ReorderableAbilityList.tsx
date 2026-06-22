@@ -1,6 +1,5 @@
 import React, { useRef, useState } from 'react';
 import {
-  Animated,
   PanResponder,
   Platform,
   ScrollView,
@@ -33,8 +32,7 @@ const GAP = 14;
 const HOLD_TO_DRAG_MS = 160;
 
 // ---------------------------------------------------------------------------
-// CSS injected once for web — wiggle animation, GPU-composited drag layer,
-// drop-target glow, and cursor states.
+// CSS injected once for web.
 // ---------------------------------------------------------------------------
 const STYLE_ID = 'aos-reorder-styles';
 function injectStylesOnce() {
@@ -57,11 +55,6 @@ function injectStylesOnce() {
     [data-wiggle="1"] { animation: aosWiggle 0.33s ease-in-out infinite; animation-delay: -0.11s; }
     [data-wiggle="2"] { animation: aosWiggle 0.28s ease-in-out infinite; animation-delay: -0.19s; }
 
-    [data-dragging="true"] {
-      will-change: transform;
-      cursor: grabbing !important;
-      filter: drop-shadow(0 8px 20px rgba(0,0,0,0.55));
-    }
     [data-drop-target="true"] {
       animation: aosDropGlow 0.9s ease-out infinite;
       border-radius: 10px;
@@ -149,21 +142,21 @@ function SortablePhase({
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [targetIndex, setTargetIndex] = useState<number | null>(null);
 
-  // Animated values — only the active card reads these.
-  const drag = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
-  const scale = useRef(new Animated.Value(1)).current;
-
+  // RNW View instances (for measureInWindow).
   const nodeRefs = useRef<Array<View | null>>([]);
   const rectsRef = useRef<Array<Rect | null>>([]);
+
+  // The raw DOM element of the card currently being dragged.
+  // We manipulate its style directly to avoid React re-render lag.
+  const activeDomRef = useRef<HTMLElement | null>(null);
+
   const grantPointer = useRef({ x: 0, y: 0 });
   const fromRef = useRef(0);
   const targetRef = useRef<number | null>(null);
   const snapshotRef = useRef<Ability[]>([]);
 
-  // rAF handle — we process at most one move per animation frame so React
-  // re-renders from setTargetIndex never pile up behind pointer events.
+  // rAF for hit-test only — position updates happen synchronously above.
   const rafRef = useRef<number | null>(null);
-  // Latest dx/dy for the pending rAF to read.
   const pendingDelta = useRef({ dx: 0, dy: 0 });
 
   const handlers = useRef({
@@ -178,6 +171,7 @@ function SortablePhase({
     targetRef.current = from;
     grantPointer.current = { x: g.x0, y: g.y0 };
 
+    // Measure each card's screen rect for drop targeting.
     rectsRef.current = [];
     nodeRefs.current.forEach((node, i) => {
       if (node && typeof (node as any).measureInWindow === 'function') {
@@ -187,36 +181,58 @@ function SortablePhase({
       }
     });
 
-    drag.setValue({ x: 0, y: 0 });
+    // On web: get the underlying DOM element from the RNW View instance and
+    // promote it to its own compositor layer. All position updates go directly
+    // to this element — bypassing React reconciliation entirely.
+    if (Platform.OS === 'web') {
+      const node = nodeRefs.current[from];
+      if (node) {
+        let domEl: HTMLElement | null = null;
+        try {
+          // findDOMNode is the officially supported RNW path.
+          const { findDOMNode } = require('react-dom');
+          domEl = findDOMNode(node) as HTMLElement;
+        } catch {
+          // Fallback: RNW may expose the DOM node directly via cast.
+          domEl = node as unknown as HTMLElement;
+        }
+        if (domEl) {
+          domEl.style.willChange = 'transform';
+          domEl.style.zIndex = '999';
+          domEl.style.filter = 'drop-shadow(0 10px 25px rgba(0,0,0,0.6))';
+          domEl.style.transform = 'scale(1.05)';
+          domEl.style.cursor = 'grabbing';
+          activeDomRef.current = domEl;
+        }
+      }
+    }
+
     setDragIndex(from);
     setTargetIndex(from);
     onDragActiveChange(true);
-    Animated.spring(scale, {
-      toValue: 1.05,
-      useNativeDriver: false,
-      bounciness: 6,
-    }).start();
   };
 
   handlers.current.onMove = (_from, g) => {
-    // Update the dragged card position immediately — Animated.setValue is
-    // synchronous and cheap; no React re-render involved.
-    drag.setValue({ x: g.dx, y: g.dy });
-    pendingDelta.current = { dx: g.dx, dy: g.dy };
+    // Synchronous direct DOM update — runs in the same event handler as the
+    // pointer event, so it paints on the very next frame with zero lag.
+    if (activeDomRef.current) {
+      activeDomRef.current.style.transform =
+        `translate3d(${g.dx}px, ${g.dy}px, 0) scale(1.05)`;
+    }
 
-    // Throttle the hit-test + setState to one call per animation frame so
-    // we don't schedule dozens of React reconciliations per pointer event.
+    // Throttle the hit-test (which triggers React setState) to one call per
+    // animation frame — this doesn't affect drag position, only drop targeting.
+    pendingDelta.current = { dx: g.dx, dy: g.dy };
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
       const { dx, dy } = pendingDelta.current;
       const px = grantPointer.current.x + dx;
       const py = grantPointer.current.y + dy;
-      const rects = rectsRef.current;
 
       let found: number | null = null;
-      for (let i = 0; i < rects.length; i++) {
-        const r = rects[i];
+      for (let i = 0; i < rectsRef.current.length; i++) {
+        const r = rectsRef.current[i];
         if (!r) continue;
         if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
           found = i;
@@ -236,11 +252,19 @@ function SortablePhase({
       rafRef.current = null;
     }
 
+    // Reset the dragged card's DOM styles before React re-renders.
+    if (activeDomRef.current) {
+      activeDomRef.current.style.transform = '';
+      activeDomRef.current.style.willChange = '';
+      activeDomRef.current.style.zIndex = '';
+      activeDomRef.current.style.filter = '';
+      activeDomRef.current.style.cursor = '';
+      activeDomRef.current = null;
+    }
+
     const from = fromRef.current;
     const to = targetRef.current;
 
-    drag.setValue({ x: 0, y: 0 });
-    scale.setValue(1);
     setDragIndex(null);
     setTargetIndex(null);
     onDragActiveChange(false);
@@ -282,8 +306,6 @@ function SortablePhase({
                   isDropTarget={
                     dragIndex !== null && targetIndex === index && dragIndex !== index
                   }
-                  drag={drag}
-                  scale={scale}
                   setNodeRef={(node) => { nodeRefs.current[index] = node; }}
                   handlersRef={handlers}
                 />
@@ -307,8 +329,6 @@ interface DraggableCardProps {
   hidden?: boolean;
   isActive: boolean;
   isDropTarget: boolean;
-  drag: Animated.ValueXY;
-  scale: Animated.Value;
   setNodeRef: (node: View | null) => void;
   handlersRef: React.MutableRefObject<{
     onGrant: (from: number, g: PanResponderGestureState) => void;
@@ -324,8 +344,6 @@ function DraggableCard({
   hidden,
   isActive,
   isDropTarget,
-  drag,
-  scale,
   setNodeRef,
   handlersRef,
 }: DraggableCardProps) {
@@ -373,34 +391,30 @@ function DraggableCard({
     })
   ).current;
 
-  const activeTransform = isActive
-    ? [{ translateX: drag.x }, { translateY: drag.y }, { scale }]
-    : [];
-
   return (
-    <Animated.View
+    // Outer View: stays in layout flow (not transformed). Used for
+    // measureInWindow and PanResponder. The parent SortablePhase manipulates
+    // this node's underlying DOM element directly for zero-lag dragging.
+    <View
       ref={setNodeRef}
       collapsable={false}
       {...pan.panHandlers}
-      style={[
-        styles.cardOuter,
-        {
-          transform: activeTransform,
-          zIndex: isActive ? 999 : 1,
-          elevation: isActive ? 8 : 0,
-        },
-      ]}
+      style={[styles.cardOuter, { zIndex: isActive ? 999 : 1 }]}
     >
       <View
         {...({
           dataSet: {
             wiggle: isActive ? undefined : String(index % 3),
-            dragging: isActive ? 'true' : undefined,
             'drop-target': isDropTarget ? 'true' : undefined,
             reorder: 'true',
           },
         } as any)}
-        style={{ userSelect: 'none' } as any}
+        style={[
+          { userSelect: 'none' } as any,
+          // Dim the in-place card while it's being dragged — the live position
+          // is shown on the DOM element itself (moved by the parent directly).
+          isActive && styles.activePlaceholder,
+        ]}
       >
         <AbilityCard
           ability={ability}
@@ -409,7 +423,7 @@ function DraggableCard({
           hidden={hidden}
         />
       </View>
-    </Animated.View>
+    </View>
   );
 }
 
@@ -481,5 +495,8 @@ const styles = StyleSheet.create({
   },
   cardOuter: {
     width: '100%',
+  },
+  activePlaceholder: {
+    opacity: 0.35,
   },
 });
