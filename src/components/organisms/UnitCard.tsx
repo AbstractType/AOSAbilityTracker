@@ -309,8 +309,8 @@ export default function UnitCard({
         </View>
         <View style={styles.summonRow}>
           <Text style={styles.notSummonedHint}>Not summoned</Text>
-          <TouchableOpacity style={[styles.destroyBtn, styles.summonBtn]} onPress={onToggleSummoned}>
-            <Text style={styles.destroyBtnText}>Summon</Text>
+          <TouchableOpacity style={[styles.actionBtn, styles.summonBtn]} onPress={onToggleSummoned}>
+            <Text style={styles.actionBtnText}>Summon</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -403,67 +403,86 @@ export default function UnitCard({
       {/* Footer — always visible, outside the flip */}
       <View style={styles.footer}>
 
-        {/* Combat context toggles — shown when handlers provided */}
+        {/* Interactive combat toggles */}
         {onToggleCharged !== undefined && (
-          <View style={styles.toggleRow}>
+          <View style={styles.toggleStrip}>
             <TouchableOpacity
-              style={[styles.toggleChip, charged && styles.toggleChipActive]}
+              style={[styles.chargedBtn, charged && styles.chargedBtnActive]}
               onPress={onToggleCharged}
               activeOpacity={0.75}
             >
-              <Text style={[styles.toggleChipText, charged && styles.toggleChipTextActive]}>
-                ⚡ Charged
-              </Text>
+              <Text style={[styles.chargedIcon, charged && styles.chargedIconActive]}>⚡</Text>
+              <View>
+                <Text style={[styles.chargedLabel, charged && styles.chargedLabelActive]}>
+                  CHARGED
+                </Text>
+                {charged && <Text style={styles.chargedSub}>abilities active</Text>}
+              </View>
             </TouchableOpacity>
-            {onHitModChange && (
-              <View style={styles.modStepper}>
-                <Text style={styles.modStepperLabel}>Hit</Text>
-                <TouchableOpacity onPress={() => onHitModChange(-1)} style={styles.modBtn} disabled={hitModifier <= -2}>
-                  <Text style={[styles.modBtnText, hitModifier <= -2 && styles.modBtnDisabled]}>−</Text>
-                </TouchableOpacity>
-                <Text style={[styles.modValue, hitModifier !== 0 && (hitModifier > 0 ? styles.modPos : styles.modNeg)]}>
-                  {hitModifier > 0 ? `+${hitModifier}` : String(hitModifier)}
-                </Text>
-                <TouchableOpacity onPress={() => onHitModChange(1)} style={styles.modBtn} disabled={hitModifier >= 2}>
-                  <Text style={[styles.modBtnText, hitModifier >= 2 && styles.modBtnDisabled]}>+</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            {onSaveModChange && (
-              <View style={styles.modStepper}>
-                <Text style={styles.modStepperLabel}>Save</Text>
-                <TouchableOpacity onPress={() => onSaveModChange(-1)} style={styles.modBtn} disabled={saveModifier <= -2}>
-                  <Text style={[styles.modBtnText, saveModifier <= -2 && styles.modBtnDisabled]}>−</Text>
-                </TouchableOpacity>
-                <Text style={[styles.modValue, saveModifier !== 0 && (saveModifier > 0 ? styles.modPos : styles.modNeg)]}>
-                  {saveModifier > 0 ? `+${saveModifier}` : String(saveModifier)}
-                </Text>
-                <TouchableOpacity onPress={() => onSaveModChange(1)} style={styles.modBtn} disabled={saveModifier >= 2}>
-                  <Text style={[styles.modBtnText, saveModifier >= 2 && styles.modBtnDisabled]}>+</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+
+            <View style={styles.modsGroup}>
+              {onHitModChange && (
+                <View style={styles.modPill}>
+                  <Text style={styles.modPillLabel}>HIT</Text>
+                  <View style={styles.modPillRow}>
+                    <TouchableOpacity onPress={() => onHitModChange(-1)} disabled={hitModifier <= -2}>
+                      <Text style={[styles.modPillBtn, hitModifier <= -2 && styles.modPillBtnOff]}>−</Text>
+                    </TouchableOpacity>
+                    <Text style={[
+                      styles.modPillVal,
+                      hitModifier > 0 && styles.modPillValPos,
+                      hitModifier < 0 && styles.modPillValNeg,
+                    ]}>
+                      {hitModifier > 0 ? `+${hitModifier}` : `${hitModifier}`}
+                    </Text>
+                    <TouchableOpacity onPress={() => onHitModChange(1)} disabled={hitModifier >= 2}>
+                      <Text style={[styles.modPillBtn, hitModifier >= 2 && styles.modPillBtnOff]}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              {onSaveModChange && (
+                <View style={styles.modPill}>
+                  <Text style={styles.modPillLabel}>SAVE</Text>
+                  <View style={styles.modPillRow}>
+                    <TouchableOpacity onPress={() => onSaveModChange(-1)} disabled={saveModifier <= -2}>
+                      <Text style={[styles.modPillBtn, saveModifier <= -2 && styles.modPillBtnOff]}>−</Text>
+                    </TouchableOpacity>
+                    <Text style={[
+                      styles.modPillVal,
+                      saveModifier > 0 && styles.modPillValPos,
+                      saveModifier < 0 && styles.modPillValNeg,
+                    ]}>
+                      {saveModifier > 0 ? `+${saveModifier}` : `${saveModifier}`}
+                    </Text>
+                    <TouchableOpacity onPress={() => onSaveModChange(1)} disabled={saveModifier >= 2}>
+                      <Text style={[styles.modPillBtn, saveModifier >= 2 && styles.modPillBtnOff]}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            </View>
           </View>
         )}
 
-        {/* Combat state summary (read-only, for opponent cards) */}
+        {/* Read-only state summary (opponent cards) */}
         {onToggleCharged === undefined && (charged || hitModifier !== 0 || saveModifier !== 0) && (
-          <View style={styles.toggleRow}>
+          <View style={styles.readOnlyStrip}>
             {charged && (
-              <View style={[styles.toggleChip, styles.toggleChipActive]}>
-                <Text style={[styles.toggleChipText, styles.toggleChipTextActive]}>⚡ Charged</Text>
+              <View style={[styles.readOnlyChip, styles.readOnlyChipCharged]}>
+                <Text style={styles.readOnlyChipTextCharged}>⚡ Charged</Text>
               </View>
             )}
             {hitModifier !== 0 && (
-              <View style={styles.toggleChip}>
-                <Text style={styles.toggleChipText}>
+              <View style={styles.readOnlyChip}>
+                <Text style={styles.readOnlyChipText}>
                   Hit {hitModifier > 0 ? `+${hitModifier}` : hitModifier}
                 </Text>
               </View>
             )}
             {saveModifier !== 0 && (
-              <View style={styles.toggleChip}>
-                <Text style={styles.toggleChipText}>
+              <View style={styles.readOnlyChip}>
+                <Text style={styles.readOnlyChipText}>
                   Save {saveModifier > 0 ? `+${saveModifier}` : saveModifier}
                 </Text>
               </View>
@@ -471,67 +490,68 @@ export default function UnitCard({
           </View>
         )}
 
-        {trackable ? (
-          <View style={styles.woundsRow}>
-            <Text style={styles.woundsLabel}>Wounds</Text>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => onWoundsChange(1)}
-              disabled={wounds >= total}
-            >
-              <Text style={[styles.stepBtnText, wounds >= total && styles.stepBtnTextDisabled]}>
-                −
-              </Text>
-            </TouchableOpacity>
-            <Text style={styles.woundsValue}>
-              {remaining}
-              <Text style={styles.woundsTotal}>/{total}</Text>
+        {/* Wounds + action row */}
+        <View style={styles.woundsActionRow}>
+          {trackable ? (
+            <View style={styles.woundsRow}>
+              <TouchableOpacity
+                style={styles.stepBtn}
+                onPress={() => onWoundsChange(1)}
+                disabled={wounds >= total}
+              >
+                <Text style={[styles.stepBtnText, wounds >= total && styles.stepBtnTextDisabled]}>−</Text>
+              </TouchableOpacity>
+              <View style={styles.woundsCenter}>
+                <Text style={styles.woundsValue}>
+                  {remaining}<Text style={styles.woundsTotal}>/{total}</Text>
+                </Text>
+                {unit.models > 1 && (
+                  <Text style={styles.modelsRemaining}>
+                    {modelsRemaining(unit, wounds)}/{unit.models} models
+                  </Text>
+                )}
+              </View>
+              <TouchableOpacity
+                style={styles.stepBtn}
+                onPress={() => onWoundsChange(-1)}
+                disabled={wounds <= 0}
+              >
+                <Text style={[styles.stepBtnText, wounds <= 0 && styles.stepBtnTextDisabled]}>+</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={styles.woundsLabel}>
+              {destroyed ? 'Destroyed' : 'On the battlefield'}
             </Text>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => onWoundsChange(-1)}
-              disabled={wounds <= 0}
-            >
-              <Text style={[styles.stepBtnText, wounds <= 0 && styles.stepBtnTextDisabled]}>+</Text>
-            </TouchableOpacity>
-            {unit.models > 1 && (
-              <Text style={styles.modelsRemaining}>
-                {modelsRemaining(unit, wounds)}/{unit.models} models
-              </Text>
-            )}
-          </View>
-        ) : (
-          <Text style={styles.woundsLabel}>
-            {destroyed ? 'Destroyed' : 'On the battlefield'}
-          </Text>
-        )}
-        {summonable ? (
-          <TouchableOpacity
-            style={[styles.destroyBtn, styles.unsummonBtn]}
-            onPress={onToggleSummoned}
-          >
-            <Text style={styles.destroyBtnText}>Unsummon</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={[styles.destroyBtn, destroyed ? styles.reviveBtn : styles.killBtn]}
-            onPress={onToggleDestroyed}
-          >
-            <Text style={styles.destroyBtnText}>{destroyed ? 'Revive' : 'Destroy'}</Text>
-          </TouchableOpacity>
-        )}
+          )}
 
-        {/* War-room combat selection button */}
+          {summonable ? (
+            <TouchableOpacity style={[styles.actionBtn, styles.unsummonBtn]} onPress={onToggleSummoned}>
+              <Text style={styles.actionBtnText}>Unsummon</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.actionBtn, destroyed ? styles.reviveBtn : styles.killBtn]}
+              onPress={onToggleDestroyed}
+            >
+              <Text style={styles.actionBtnText}>{destroyed ? 'Revive' : 'Destroy'}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* War-room combat selection */}
         {onSelectForCombat && (
-          <TouchableOpacity
-            style={[styles.combatSelectBtn, isAttacking && styles.combatSelectBtnActive]}
-            onPress={onSelectForCombat}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.combatSelectBtnText}>
-              {isAttacking ? '⚔ Attacking — tap to clear' : (combatSelectLabel ?? '⚔ Select')}
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.combatSelectRow}>
+            <TouchableOpacity
+              style={[styles.combatSelectBtn, isAttacking && styles.combatSelectBtnActive]}
+              onPress={onSelectForCombat}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.combatSelectBtnText, isAttacking && styles.combatSelectBtnTextActive]}>
+                {isAttacking ? '⚔ Attacking — tap to clear' : (combatSelectLabel ?? '⚔ Select for combat')}
+              </Text>
+            </TouchableOpacity>
+          </View>
         )}
       </View>
 
@@ -1153,24 +1173,165 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // ── Footer ──
+  // ── Footer (column layout) ──
   footer: {
+    flexDirection: 'column',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(90,74,47,0.2)',
+  },
+
+  // Toggle strip (interactive)
+  toggleStrip: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    flexWrap: 'wrap',
     gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: 'rgba(0,0,0,0.04)',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(90,74,47,0.2)',
+    backgroundColor: '#0C1525',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(91,169,255,0.07)',
+  },
+  chargedBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    backgroundColor: '#131E32',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1E3050',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  chargedBtnActive: {
+    backgroundColor: '#2A1800',
+    borderColor: '#C49A20',
+  },
+  chargedIcon: {
+    fontSize: 18,
+    lineHeight: 22,
+    opacity: 0.3,
+  },
+  chargedIconActive: {
+    opacity: 1,
+  },
+  chargedLabel: {
+    color: '#4A6A8F',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.7,
+  },
+  chargedLabelActive: {
+    color: '#E6B566',
+  },
+  chargedSub: {
+    color: '#9A7A30',
+    fontSize: 9,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  modsGroup: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  modPill: {
+    backgroundColor: '#131E32',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1E3050',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    alignItems: 'center',
+    gap: 2,
+  },
+  modPillLabel: {
+    color: '#4A6A8F',
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  modPillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  modPillBtn: {
+    color: '#7A9FBF',
+    fontSize: 17,
+    fontWeight: '900',
+    width: 20,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  modPillBtnOff: {
+    color: '#2A3A52',
+  },
+  modPillVal: {
+    color: '#D0E0F8',
+    fontSize: 15,
+    fontWeight: '900',
+    minWidth: 26,
+    textAlign: 'center',
+  },
+  modPillValPos: {
+    color: '#4CAF81',
+  },
+  modPillValNeg: {
+    color: '#FF6B6B',
+  },
+
+  // Read-only state strip (opponent cards)
+  readOnlyStrip: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    backgroundColor: '#0C1525',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(91,169,255,0.07)',
+  },
+  readOnlyChip: {
+    backgroundColor: '#1A2236',
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: '#2A3A58',
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+  },
+  readOnlyChipCharged: {
+    backgroundColor: '#2A1800',
+    borderColor: '#C49A20',
+  },
+  readOnlyChipText: {
+    color: '#7A9FBF',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  readOnlyChipTextCharged: {
+    color: '#E6B566',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+
+  // Wounds + action row
+  woundsActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
   },
   woundsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    flexShrink: 1,
+    gap: 10,
+  },
+  woundsCenter: {
+    alignItems: 'center',
+    minWidth: 48,
   },
   woundsLabel: {
     color: colors.textCardSecondary,
@@ -1178,10 +1339,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   stepBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     backgroundColor: '#15203A',
+    borderWidth: 1,
+    borderColor: '#1E3050',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1192,31 +1355,31 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   stepBtnTextDisabled: {
-    color: '#56657F',
+    color: '#3A4A66',
   },
   woundsValue: {
     color: colors.textCardPrimary,
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '900',
-    minWidth: 40,
-    textAlign: 'center',
   },
   woundsTotal: {
     color: colors.textCardMuted,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
   },
   modelsRemaining: {
-    color: colors.textCardSecondary,
-    fontSize: 11,
+    color: '#4A6A8F',
+    fontSize: 9,
     fontWeight: '700',
+    letterSpacing: 0.3,
+    marginTop: 1,
   },
-  destroyBtn: {
+  actionBtn: {
     borderRadius: radii.pill,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
   },
-  destroyBtnText: {
+  actionBtnText: {
     color: '#fff',
     fontSize: 12,
     fontWeight: '800',
@@ -1276,100 +1439,31 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
 
-  // ── Combat toggles row ──
-  toggleRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 6,
-    width: '100%',
-    paddingBottom: 4,
+  // ── Combat select ──
+  combatSelectRow: {
+    paddingHorizontal: 12,
+    paddingBottom: 10,
   },
-  toggleChip: {
-    backgroundColor: '#1A2236',
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: '#2E3F60',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-  },
-  toggleChipActive: {
-    backgroundColor: '#3D2800',
-    borderColor: '#B87D1A',
-  },
-  toggleChipText: {
-    color: '#7A9FBF',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  toggleChipTextActive: {
-    color: '#E6B566',
-  },
-  modStepper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#1A2236',
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: '#2E3F60',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  modStepperLabel: {
-    color: '#7A9FBF',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-    marginRight: 2,
-  },
-  modBtn: {
-    width: 20,
-    height: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modBtnText: {
-    color: '#E9F0FF',
-    fontSize: 15,
-    fontWeight: '900',
-    lineHeight: 18,
-  },
-  modBtnDisabled: {
-    color: '#3A4A66',
-  },
-  modValue: {
-    color: '#E9F0FF',
-    fontSize: 12,
-    fontWeight: '900',
-    minWidth: 22,
-    textAlign: 'center',
-  },
-  modPos: {
-    color: '#4CAF81',
-  },
-  modNeg: {
-    color: '#FF6B6B',
-  },
-  // ── Combat select button ──
   combatSelectBtn: {
-    backgroundColor: '#152848',
-    borderRadius: radii.pill,
+    backgroundColor: '#0D1E36',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#2E5A8E',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    alignSelf: 'flex-end',
+    borderColor: '#1E4070',
+    paddingVertical: 8,
+    alignItems: 'center',
   },
   combatSelectBtnActive: {
-    backgroundColor: '#3D1800',
-    borderColor: '#B84A1A',
+    backgroundColor: '#2A0D00',
+    borderColor: '#8C3A00',
   },
   combatSelectBtnText: {
-    color: '#5BA9FF',
+    color: '#4A7AB5',
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: '700',
     letterSpacing: 0.2,
+  },
+  combatSelectBtnTextActive: {
+    color: '#E8935A',
   },
 
   // ── Destroyed overlay ──
