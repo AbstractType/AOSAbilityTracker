@@ -57,10 +57,6 @@ function injectStylesOnce() {
 
     [data-drop-target="true"] {
       animation: aosDropGlow 0.9s ease-out infinite;
-      border-radius: 10px;
-      outline: 2px solid #5BA9FF;
-      outline-offset: 2px;
-      background: rgba(91,169,255,0.10);
     }
     [data-reorder] { cursor: grab; }
     [data-reorder]:active { cursor: grabbing; }
@@ -405,15 +401,14 @@ function DraggableCard({
         {...({
           dataSet: {
             wiggle: isActive ? undefined : String(index % 3),
-            'drop-target': isDropTarget ? 'true' : undefined,
+            dropTarget: isDropTarget ? 'true' : undefined,
             reorder: 'true',
           },
         } as any)}
         style={[
           { userSelect: 'none' } as any,
-          // Dim the in-place card while it's being dragged — the live position
-          // is shown on the DOM element itself (moved by the parent directly).
           isActive && styles.activePlaceholder,
+          isDropTarget && styles.dropTarget,
         ]}
       >
         <AbilityCard
@@ -498,5 +493,11 @@ const styles = StyleSheet.create({
   },
   activePlaceholder: {
     opacity: 0.35,
+  },
+  dropTarget: {
+    borderRadius: radii.lg,
+    borderWidth: 2,
+    borderColor: '#5BA9FF',
+    backgroundColor: 'rgba(91, 169, 255, 0.12)',
   },
 });
