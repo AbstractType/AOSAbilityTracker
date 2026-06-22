@@ -47,16 +47,20 @@ function injectStylesOnce() {
       100% { transform: rotate(-1.4deg); }
     }
     @keyframes aosDropGlow {
-      0%   { box-shadow: 0 0 0 0 rgba(91,169,255,0.55); }
-      60%  { box-shadow: 0 0 0 6px rgba(91,169,255,0.0); }
-      100% { box-shadow: 0 0 0 0 rgba(91,169,255,0.0); }
+      0%   { box-shadow: 0 0 6px 1px rgba(91,169,255,0.5); }
+      50%  { box-shadow: 0 0 20px 5px rgba(91,169,255,0.95); }
+      100% { box-shadow: 0 0 6px 1px rgba(91,169,255,0.5); }
     }
     [data-wiggle="0"] { animation: aosWiggle 0.30s ease-in-out infinite; animation-delay: 0s; }
     [data-wiggle="1"] { animation: aosWiggle 0.33s ease-in-out infinite; animation-delay: -0.11s; }
     [data-wiggle="2"] { animation: aosWiggle 0.28s ease-in-out infinite; animation-delay: -0.19s; }
 
-    [data-drop-target="true"] {
-      animation: aosDropGlow 0.9s ease-out infinite;
+    [data-card-drop="true"] {
+      outline: 2px solid #5BA9FF !important;
+      outline-offset: 3px !important;
+      animation: aosDropGlow 0.9s ease-in-out infinite !important;
+      z-index: 1000 !important;
+      pointer-events: none !important;
     }
     [data-reorder] { cursor: grab; }
     [data-reorder]:active { cursor: grabbing; }
@@ -114,8 +118,6 @@ export default function ReorderableAbilityList({
 // SortablePhase
 // ---------------------------------------------------------------------------
 
-interface Rect { x: number; y: number; w: number; h: number; }
-
 interface SortablePhaseProps {
   phase: Phase;
   items: Ability[];
@@ -138,9 +140,10 @@ function SortablePhase({
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [targetIndex, setTargetIndex] = useState<number | null>(null);
 
-  // RNW View instances (for measureInWindow).
+  // RNW View instances — used to find DOM nodes on drag start.
   const nodeRefs = useRef<Array<View | null>>([]);
-  const rectsRef = useRef<Array<Rect | null>>([]);
+  // DOM elements for every card, captured once on grant for hit-testing.
+  const domNodesRef = useRef<Array<HTMLElement | null>>([]);
 
   // The raw DOM element of the card currently being dragged.
   // We manipulate its style directly to avoid React re-render lag.
@@ -158,7 +161,7 @@ function SortablePhase({
   const handlers = useRef({
     onGrant: (_from: number, _g: PanResponderGestureState) => {},
     onMove: (_from: number, _g: PanResponderGestureState) => {},
-    onRelease: (_from: number) => {},
+    onRelease: (_from: number, _g: PanResponderGestureState | null) => {},
   });
 
   handlers.current.onGrant = (from, g) => {
@@ -167,40 +170,30 @@ function SortablePhase({
     targetRef.current = from;
     grantPointer.current = { x: g.x0, y: g.y0 };
 
-    // Measure each card's screen rect for drop targeting.
-    rectsRef.current = [];
-    nodeRefs.current.forEach((node, i) => {
-      if (node && typeof (node as any).measureInWindow === 'function') {
-        (node as any).measureInWindow((x: number, y: number, w: number, h: number) => {
-          rectsRef.current[i] = { x, y, w, h };
-        });
-      }
-    });
-
-    // On web: get the underlying DOM element from the RNW View instance and
-    // promote it to its own compositor layer. All position updates go directly
-    // to this element — bypassing React reconciliation entirely.
+    // On web: resolve every card's raw DOM element once per drag.
+    // We use these for two things:
+    //   1. getBoundingClientRect() hit-testing in onMove (always viewport-relative)
+    //   2. Direct style mutation on the active card for zero-lag positioning
     if (Platform.OS === 'web') {
-      const node = nodeRefs.current[from];
-      if (node) {
-        let domEl: HTMLElement | null = null;
-        try {
-          // findDOMNode is the officially supported RNW path.
-          const { findDOMNode } = require('react-dom');
-          domEl = findDOMNode(node) as HTMLElement;
-        } catch {
-          // Fallback: RNW may expose the DOM node directly via cast.
-          domEl = node as unknown as HTMLElement;
+      try {
+        const { findDOMNode } = require('react-dom');
+        const nodes: (HTMLElement | null)[] = [];
+        nodeRefs.current.forEach((node, i) => {
+          try { nodes[i] = findDOMNode(node) as HTMLElement; }
+          catch { nodes[i] = node as unknown as HTMLElement; }
+        });
+        domNodesRef.current = nodes;
+
+        const activeDom = nodes[from];
+        if (activeDom) {
+          activeDom.style.willChange = 'transform';
+          activeDom.style.zIndex = '999';
+          activeDom.style.filter = 'drop-shadow(0 10px 25px rgba(0,0,0,0.6))';
+          activeDom.style.transform = 'scale(1.05)';
+          activeDom.style.cursor = 'grabbing';
+          activeDomRef.current = activeDom;
         }
-        if (domEl) {
-          domEl.style.willChange = 'transform';
-          domEl.style.zIndex = '999';
-          domEl.style.filter = 'drop-shadow(0 10px 25px rgba(0,0,0,0.6))';
-          domEl.style.transform = 'scale(1.05)';
-          domEl.style.cursor = 'grabbing';
-          activeDomRef.current = domEl;
-        }
-      }
+      } catch { /* noop */ }
     }
 
     setDragIndex(from);
@@ -223,14 +216,21 @@ function SortablePhase({
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
       const { dx, dy } = pendingDelta.current;
+      // px/py are pageX/pageY (document-relative). Convert to clientX/clientY
+      // (viewport-relative) so they match getBoundingClientRect() below.
       const px = grantPointer.current.x + dx;
       const py = grantPointer.current.y + dy;
+      const clientX = px - (window.scrollX ?? 0);
+      const clientY = py - (window.scrollY ?? 0);
 
       let found: number | null = null;
-      for (let i = 0; i < rectsRef.current.length; i++) {
-        const r = rectsRef.current[i];
-        if (!r) continue;
-        if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
+      const nodes = domNodesRef.current;
+      for (let i = 0; i < nodes.length; i++) {
+        if (i === fromRef.current) continue; // skip the floating active card
+        const el = nodes[i];
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
           found = i;
           break;
         }
@@ -242,10 +242,33 @@ function SortablePhase({
     });
   };
 
-  handlers.current.onRelease = () => {
+  handlers.current.onRelease = (_, g) => {
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
+    }
+
+    // Fast drags can release before the last rAF fires, leaving targetRef
+    // stuck at wherever the previous rAF landed (often just an adjacent card).
+    // Run one final synchronous hit-test at the exact release position so the
+    // committed target always reflects where the user actually let go.
+    if (Platform.OS === 'web' && g && domNodesRef.current.length > 0) {
+      const px = g.x0 + g.dx;
+      const py = g.y0 + g.dy;
+      const clientX = px - (window.scrollX ?? 0);
+      const clientY = py - (window.scrollY ?? 0);
+      const from = fromRef.current;
+      const nodes = domNodesRef.current;
+      for (let i = 0; i < nodes.length; i++) {
+        if (i === from) continue;
+        const el = nodes[i];
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+          targetRef.current = i;
+          break;
+        }
+      }
     }
 
     // Reset the dragged card's DOM styles before React re-renders.
@@ -329,7 +352,7 @@ interface DraggableCardProps {
   handlersRef: React.MutableRefObject<{
     onGrant: (from: number, g: PanResponderGestureState) => void;
     onMove: (from: number, g: PanResponderGestureState) => void;
-    onRelease: (from: number) => void;
+    onRelease: (from: number, g: PanResponderGestureState | null) => void;
   }>;
 }
 
@@ -373,15 +396,15 @@ function DraggableCard({
         armedRef.current && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
       onPanResponderGrant: (_e, g) => handlersRef.current.onGrant(indexRef.current, g),
       onPanResponderMove: (_e, g) => handlersRef.current.onMove(indexRef.current, g),
-      onPanResponderRelease: () => {
+      onPanResponderRelease: (_e, g) => {
         clearHold();
         armedRef.current = false;
-        handlersRef.current.onRelease(indexRef.current);
+        handlersRef.current.onRelease(indexRef.current, g);
       },
-      onPanResponderTerminate: () => {
+      onPanResponderTerminate: (_e, g) => {
         clearHold();
         armedRef.current = false;
-        handlersRef.current.onRelease(indexRef.current);
+        handlersRef.current.onRelease(indexRef.current, g ?? null);
       },
       onPanResponderTerminationRequest: () => !armedRef.current,
     })
@@ -391,24 +414,25 @@ function DraggableCard({
     // Outer View: stays in layout flow (not transformed). Used for
     // measureInWindow and PanResponder. The parent SortablePhase manipulates
     // this node's underlying DOM element directly for zero-lag dragging.
+    // data-card-drop drives the CSS highlight (z-index 1000 !important so it
+    // renders above the floating active card at z-index 999).
     <View
       ref={setNodeRef}
       collapsable={false}
       {...pan.panHandlers}
+      {...({ dataSet: { cardDrop: isDropTarget ? 'true' : undefined } } as any)}
       style={[styles.cardOuter, { zIndex: isActive ? 999 : 1 }]}
     >
       <View
         {...({
           dataSet: {
             wiggle: isActive ? undefined : String(index % 3),
-            dropTarget: isDropTarget ? 'true' : undefined,
             reorder: 'true',
           },
         } as any)}
         style={[
           { userSelect: 'none' } as any,
           isActive && styles.activePlaceholder,
-          isDropTarget && styles.dropTarget,
         ]}
       >
         <AbilityCard
@@ -441,6 +465,7 @@ const styles = StyleSheet.create({
   content: {
     paddingBottom: 24,
     paddingTop: 8,
+    overflow: 'visible',
   },
   hintBox: {
     backgroundColor: '#1F2A4A',
@@ -459,6 +484,7 @@ const styles = StyleSheet.create({
   phaseBlock: {
     marginTop: 16,
     width: '100%',
+    overflow: 'visible',
   },
   phaseHeaderRow: {
     flexDirection: 'row',
@@ -482,22 +508,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: GAP,
     alignItems: 'flex-start',
+    overflow: 'visible',
   },
   masonryColumn: {
     flex: 1,
     minWidth: 0,
     gap: GAP,
+    overflow: 'visible',
   },
   cardOuter: {
     width: '100%',
+    overflow: 'visible',
   },
   activePlaceholder: {
     opacity: 0.35,
-  },
-  dropTarget: {
-    borderRadius: radii.lg,
-    borderWidth: 2,
-    borderColor: '#5BA9FF',
-    backgroundColor: 'rgba(91, 169, 255, 0.12)',
   },
 });
