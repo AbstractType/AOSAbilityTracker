@@ -21,6 +21,9 @@ const BORDER = '#A68B4D';
 
 // ─── Probability helpers ──────────────────────────────────────────────────────
 
+// Natural 6 is always a critical hit in AoS 4th
+const P_CRIT = 1 / 6;
+
 function parseTarget(s: string | undefined): number | null {
   const m = s?.match(/^(\d+)\+/);
   return m ? parseInt(m[1]) : null;
@@ -52,9 +55,56 @@ function parseRend(s: string | undefined): number {
   return m ? parseInt(m[1]) : 0;
 }
 
+type CritKind = 'extra_hit' | 'mortal' | 'auto_wound' | 'deadly';
+
+interface CritEffect {
+  kind: CritKind;
+  /** Mortal wounds dealt on a crit (1 for 'mortal', N for 'deadly'). */
+  mortals: number;
+}
+
+/**
+ * Parses Crit(...) weapon abilities that alter the attack roll sequence.
+ * Returns null for abilities that don't affect the math (Anti-X, Charge, etc.).
+ */
+function parseCritEffect(ability: string | undefined): CritEffect | null {
+  if (!ability) return null;
+  if (/crit\s*\(\s*(2\s*hits?|extra\s*hit)\s*\)/i.test(ability))
+    return { kind: 'extra_hit', mortals: 0 };
+  if (/crit\s*\(\s*mortal\s*\)/i.test(ability))
+    return { kind: 'mortal', mortals: 1 };
+  if (/crit\s*\(\s*auto.?wound\s*\)/i.test(ability))
+    return { kind: 'auto_wound', mortals: 0 };
+  const deadly = ability.match(/crit\s*\(\s*deadly\s*(\d+)\s*\)/i);
+  if (deadly) return { kind: 'deadly', mortals: parseInt(deadly[1]) };
+  return null;
+}
+
+/**
+ * Whether an ability tag is baked into the damage calculation (true)
+ * vs. shown as a contextual note only (false).
+ */
+function isFactoredAbility(tag: string): boolean {
+  return /crit\s*\(/i.test(tag);
+}
+
+/**
+ * Split a comma-separated ability string like
+ * "Anti-Infantry (+1 Rend), Crit (2 Hits)" into individual trimmed tags,
+ * stripping BattleScribe bold/keyword markers.
+ */
+function splitAbilityTags(ability: string | undefined): string[] {
+  if (!ability || ability.trim() === '-') return [];
+  return ability
+    .split(/,\s*/)
+    .map(t => t.replace(/\*\*/g, '').replace(/\^\^/g, '').trim())
+    .filter(Boolean);
+}
+
 /**
  * Expected damage for one weapon's full attack sequence vs an enemy with
- * a given save characteristic. Pass null for "no save" (unarmoured).
+ * a given save characteristic, incorporating Crit weapon abilities.
+ * Pass null for "no save" (unarmoured).
  */
 function weaponExpectedDmg(
   w: WeaponProfile,
@@ -66,7 +116,38 @@ function weaponExpectedDmg(
   const rend    = parseRend(w.rend);
   const effSave = enemySave !== null ? enemySave + rend : 99;
   const pSave   = dieProb(effSave <= 6 ? effSave : null);
-  return avgRoll(w.attacks) * modelCount * pHit * pWound * (1 - pSave) * avgRoll(w.damage);
+  const avgDmg  = avgRoll(w.damage);
+  const avgAtks = avgRoll(w.attacks) * modelCount;
+
+  // pCrit is capped at pHit (can't crit if the hit roll itself fails for target>6)
+  const pCrit     = Math.min(P_CRIT, pHit);
+  const pNormHit  = pHit - pCrit;
+  const crit      = parseCritEffect(w.ability);
+
+  let dmgPerAtk: number;
+  switch (crit?.kind) {
+    case 'extra_hit':
+      // Natural 6 → 2 hits; both proceed through wound/save normally
+      dmgPerAtk = (pHit + pCrit) * pWound * (1 - pSave) * avgDmg;
+      break;
+    case 'mortal':
+      // Natural 6 → 1 mortal wound (save-immune), attack sequence ends
+      // Non-crit hits → normal wound/save/dmg
+      dmgPerAtk = pCrit * 1 + pNormHit * pWound * (1 - pSave) * avgDmg;
+      break;
+    case 'auto_wound':
+      // Natural 6 → skip wound roll, go straight to save
+      dmgPerAtk = (pCrit + pNormHit * pWound) * (1 - pSave) * avgDmg;
+      break;
+    case 'deadly':
+      // Natural 6 → N mortal wounds (save-immune), attack sequence ends
+      dmgPerAtk = pCrit * crit.mortals + pNormHit * pWound * (1 - pSave) * avgDmg;
+      break;
+    default:
+      dmgPerAtk = pHit * pWound * (1 - pSave) * avgDmg;
+  }
+
+  return avgAtks * dmgPerAtk;
 }
 
 function fmtDmg(n: number): string {
@@ -333,12 +414,30 @@ function StatsBack({ unit, wounds, onFlip }: { unit: Unit; wounds: number; onFli
           <Text style={styles.backNoWeapons}>No weapon profiles.</Text>
         ) : (
           unit.weapons.map(w => {
-            const pHit    = dieProb(parseTarget(w.hit));
-            const pWound  = dieProb(parseTarget(w.wound));
-            const avgAtk  = avgRoll(w.attacks) * remaining;
-            const avgWnds = avgAtk * pHit * pWound;
-            const noneVal = weaponExpectedDmg(w, null, remaining);
-            const dmgVals = SAVE_TARGETS.map(s => weaponExpectedDmg(w, s, remaining));
+            const pHit   = dieProb(parseTarget(w.hit));
+            const pWound = dieProb(parseTarget(w.wound));
+            const avgAtk = avgRoll(w.attacks) * remaining;
+            const crit   = parseCritEffect(w.ability);
+            const pCrit  = Math.min(P_CRIT, pHit);
+
+            // Effective hit rate shown in the chip — boosted by Crit (2 Hits)
+            const effHit = crit?.kind === 'extra_hit' ? pHit + pCrit : pHit;
+
+            // Pre-save wounds incorporating crit effects
+            let avgWnds: number;
+            switch (crit?.kind) {
+              case 'extra_hit':
+                avgWnds = avgAtk * (pHit + pCrit) * pWound; break;
+              case 'mortal':
+              case 'auto_wound':
+                avgWnds = avgAtk * (pCrit + (pHit - pCrit) * pWound); break;
+              default:
+                avgWnds = avgAtk * pHit * pWound;
+            }
+
+            const noneVal    = weaponExpectedDmg(w, null, remaining);
+            const dmgVals    = SAVE_TARGETS.map(s => weaponExpectedDmg(w, s, remaining));
+            const abilityTags = splitAbilityTags(w.ability);
 
             return (
               <View key={w.name} style={styles.weaponStatBlock}>
@@ -355,12 +454,30 @@ function StatsBack({ unit, wounds, onFlip }: { unit: Unit; wounds: number; onFli
                   </View>
                 </View>
 
+                {/* Ability tags — green chip for factored-in crits, muted for contextual */}
+                {abilityTags.length > 0 && (
+                  <View style={styles.abilityTagRow}>
+                    {abilityTags.map((tag, i) => {
+                      const factored = isFactoredAbility(tag);
+                      return (
+                        <View key={i} style={[styles.abilityTag, factored ? styles.abilityTagCrit : styles.abilityTagContextual]}>
+                          <Text style={[styles.abilityTagText, factored ? styles.abilityTagTextCrit : styles.abilityTagTextContextual]}>
+                            {factored ? '✓ ' : ''}{tag}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+
                 {/* Probability row */}
                 <View style={styles.probRow}>
                   <View style={styles.probChip}>
-                    <Text style={styles.probLabel}>Hit</Text>
-                    <Text style={[styles.probValue, pctStyle(pHit)]}>
-                      {Math.round(pHit * 100)}%
+                    <Text style={styles.probLabel}>
+                      {crit?.kind === 'extra_hit' ? 'Eff.Hit' : 'Hit'}
+                    </Text>
+                    <Text style={[styles.probValue, pctStyle(effHit)]}>
+                      {Math.round(effHit * 100)}%
                     </Text>
                   </View>
                   <View style={styles.probChip}>
@@ -370,7 +487,9 @@ function StatsBack({ unit, wounds, onFlip }: { unit: Unit; wounds: number; onFli
                     </Text>
                   </View>
                   <View style={styles.probChip}>
-                    <Text style={styles.probLabel}>Avg wnds</Text>
+                    <Text style={styles.probLabel}>
+                      {crit?.kind === 'mortal' ? 'Eff.wnds' : 'Avg wnds'}
+                    </Text>
                     <Text style={[styles.probValue, { color: '#E9F0FF' }]}>
                       {avgWnds.toFixed(1)}
                     </Text>
@@ -718,6 +837,36 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 6,
+  },
+  abilityTagRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  abilityTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  abilityTagCrit: {
+    backgroundColor: '#0F2A1C',
+    borderColor: '#2A6B44',
+  },
+  abilityTagContextual: {
+    backgroundColor: '#131828',
+    borderColor: '#252E4A',
+  },
+  abilityTagText: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  abilityTagTextCrit: {
+    color: '#4CAF81',
+  },
+  abilityTagTextContextual: {
+    color: '#4C6A8C',
   },
   weaponStatName: {
     color: '#E9F0FF',
