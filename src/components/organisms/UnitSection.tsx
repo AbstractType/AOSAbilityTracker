@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import type { Unit, UnitState } from '../../types/unit';
+import type { Phase } from '../../types';
 import { distributeIntoColumns } from '../../utils/masonry';
 import { unitCategory } from '../../utils/units';
 import { radii } from '../../theme/tokens';
@@ -25,6 +26,8 @@ interface UnitSectionProps {
   // War-room combat selection — optional
   onSelectUnitForCombat?: (unitId: string) => void;
   attackingUnitId?: string | null;
+  /** Active game phase — passed to UnitCard to gate weapon display. */
+  activePhase?: Phase | null;
 }
 
 const EMPTY_STATE: UnitState = { wounds: 0, destroyed: false, charged: false, hitModifier: 0, saveModifier: 0 };
@@ -51,6 +54,7 @@ export default function UnitSection({
   onUnitSaveModChange,
   onSelectUnitForCombat,
   attackingUnitId,
+  activePhase,
 }: UnitSectionProps) {
   const [collapsed, setCollapsed] = useState(true);
 
@@ -79,6 +83,7 @@ export default function UnitSection({
                 onSaveModChange={onUnitSaveModChange ? (d) => onUnitSaveModChange(unit.id, d) : undefined}
                 onSelectForCombat={onSelectUnitForCombat ? () => onSelectUnitForCombat(unit.id) : undefined}
                 isAttacking={attackingUnitId === unit.id}
+                activePhase={activePhase}
               />
             );
           })}
@@ -155,15 +160,23 @@ export default function UnitSection({
             <Text style={styles.emptyNote}>No units act in this phase.</Text>
           ) : null}
 
-          {manifestations.length > 0 && (
-            <>
-              <Text style={styles.subHeading}>
-                Manifestations ({manifestations.length}
-                {summonedCount > 0 ? `, ${summonedCount} summoned` : ''})
-              </Text>
-              {renderGrid(manifestations, true)}
-            </>
-          )}
+          {manifestations.length > 0 && (() => {
+            // Un-summoned manifestations can only be summoned in the Hero Phase.
+            // In other phases, only show manifestations that are already on the battlefield.
+            const visibleManifestations = !activePhase || activePhase === 'Hero Phase'
+              ? manifestations
+              : manifestations.filter(m => unitStates.get(m.id)?.summoned);
+            if (visibleManifestations.length === 0) return null;
+            return (
+              <>
+                <Text style={styles.subHeading}>
+                  Manifestations ({visibleManifestations.length}
+                  {summonedCount > 0 ? `, ${summonedCount} summoned` : ''})
+                </Text>
+                {renderGrid(visibleManifestations, true)}
+              </>
+            );
+          })()}
 
           {terrain.length > 0 && (
             <>

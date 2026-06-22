@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Modal, ScrollView, StyleSheet } from 'react-native';
 import type { Unit, UnitState } from '../../types/unit';
+import type { Phase } from '../../types';
 import { modelsRemaining, unitTotalWounds } from '../../utils/units';
 import { AttackContext } from './UnitCard';
 import { radii, colors } from '../../theme/tokens';
@@ -118,7 +119,13 @@ function weaponExpectedDmg(
   return avgAtks * dmgPerAtk;
 }
 
-function totalExpectedDmg(attacker: Unit, attackerState: UnitState, target: Unit, targetState: UnitState): number {
+function totalExpectedDmg(
+  attacker: Unit,
+  attackerState: UnitState,
+  target: Unit,
+  targetState: UnitState,
+  phase: Phase | null | undefined,
+): number {
   const attackerRemaining = modelsRemaining(attacker, attackerState.wounds);
   const targetSaveNum = target.save ? parseTarget(target.save) : null;
   const ctx: AttackContext = {
@@ -128,7 +135,11 @@ function totalExpectedDmg(attacker: Unit, attackerState: UnitState, target: Unit
     targetSaveMod: targetState.saveModifier ?? 0,
     targetKeywords: target.keywords ?? [],
   };
-  return attacker.weapons.reduce((sum, w) => sum + weaponExpectedDmg(w, targetSaveNum, attackerRemaining, ctx), 0);
+  // Only sum weapons usable in this phase.
+  const weapons = phase === 'Shooting Phase' ? attacker.weapons.filter(w => w.kind === 'ranged')
+                : phase === 'Combat Phase'   ? attacker.weapons.filter(w => w.kind === 'melee')
+                : attacker.weapons;
+  return weapons.reduce((sum, w) => sum + weaponExpectedDmg(w, targetSaveNum, attackerRemaining, ctx), 0);
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -140,6 +151,8 @@ interface CombatPredictionModalProps {
   target: Unit | null;
   targetState: UnitState;
   onClose: () => void;
+  /** Active game phase — gates which weapon profiles contribute to the damage estimate. */
+  phase?: Phase | null;
 }
 
 function pctStyle(pct: number) {
@@ -155,35 +168,38 @@ export default function CombatPredictionModal({
   target,
   targetState,
   onClose,
+  phase,
 }: CombatPredictionModalProps) {
   if (!attacker || !target) return null;
 
-  const expectedDmg = totalExpectedDmg(attacker, attackerState, target, targetState);
+  const expectedDmg = totalExpectedDmg(attacker, attackerState, target, targetState, phase);
+  const weaponKindLabel = phase === 'Shooting Phase' ? ' (ranged)' : phase === 'Combat Phase' ? ' (melee)' : '';
   const targetTotal = unitTotalWounds(target);
   const targetRemaining = modelsRemaining(target, targetState.wounds);
   const targetHpLeft = targetTotal > 0 ? targetTotal - targetState.wounds : null;
 
   const targetModelsLeft = target.models > 1 ? targetRemaining : null;
-  const healthStr = target.health ? parseTarget(target.health) : null;
-  const perModelHp = healthStr ?? 1;
+  const perModelHpRaw = target.health ? parseInt(target.health) : NaN;
+  const perModelHp = !isNaN(perModelHpRaw) && perModelHpRaw > 0 ? perModelHpRaw : 1;
 
-  // Survival probability: how likely it is that at least 1 model survives.
-  // Simple estimate: P(dmg < remaining hp) ≈ treat expected as approximate.
-  // We compute the ratio of remaining HP vs expected damage.
-  const hpRatio = targetHpLeft !== null && targetHpLeft > 0 ? targetHpLeft / Math.max(0.01, expectedDmg) : null;
-  const survivalPct = hpRatio !== null ? Math.min(1, Math.max(0, 1 - (1 / Math.max(1, hpRatio)))) : null;
+  // Expected HP remaining on the target after this attack lands.
+  const expectedHpAfter = targetHpLeft !== null ? Math.max(0, targetHpLeft - expectedDmg) : null;
+  const likelyDestroyed = targetHpLeft !== null && expectedDmg >= targetHpLeft;
 
-  // Models killed estimate
+  // Models killed estimate (multi-model units only).
   const modelsKilled = target.models > 1 && perModelHp > 0
     ? Math.min(targetRemaining, Math.floor(expectedDmg / perModelHp))
     : null;
+  const modelsAfter = modelsKilled !== null ? Math.max(0, targetRemaining - modelsKilled) : null;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.overlay}>
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>⚔ Combat Prediction</Text>
+            <Text style={styles.headerTitle}>
+              {phase === 'Shooting Phase' ? '🏹 Shooting Prediction' : '⚔ Combat Prediction'}
+            </Text>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
               <Text style={styles.closeText}>✕</Text>
             </TouchableOpacity>
@@ -213,26 +229,24 @@ export default function CombatPredictionModal({
 
             {/* Expected damage */}
             <View style={styles.resultBlock}>
-              <Text style={styles.resultLabel}>Expected damage through</Text>
+              <Text style={styles.resultLabel}>Expected damage through{weaponKindLabel}</Text>
               <Text style={[styles.resultValue, pctStyle(Math.min(1, expectedDmg / Math.max(1, targetTotal)))]}>
                 {expectedDmg >= 100 ? expectedDmg.toFixed(0) : expectedDmg.toFixed(1)}
               </Text>
-              {modelsKilled !== null && (
-                <Text style={styles.resultSub}>
-                  ≈ {modelsKilled} of {targetRemaining} model{targetRemaining !== 1 ? 's' : ''} killed
-                </Text>
-              )}
             </View>
 
             {/* Survival */}
-            {hpRatio !== null && (
+            {expectedHpAfter !== null && (
               <View style={styles.resultBlock}>
-                <Text style={styles.resultLabel}>Target survival odds</Text>
-                <Text style={[styles.resultValue, pctStyle(hpRatio > 1 ? 0.85 : hpRatio > 0.5 ? 0.5 : 0.2)]}>
-                  {targetHpLeft !== null ? `${targetHpLeft} HP left` : '—'}
+                <Text style={styles.resultLabel}>Expected result</Text>
+                <Text style={[styles.resultValue, likelyDestroyed ? { color: '#FF6B6B' } : { color: '#4CAF81' }]}>
+                  {likelyDestroyed
+                    ? 'Likely destroyed'
+                    : `~${expectedHpAfter.toFixed(1)} HP left`}
                 </Text>
                 <Text style={styles.resultSub}>
-                  {expectedDmg.toFixed(1)} expected vs {targetHpLeft?.toFixed(0)} remaining HP
+                  {expectedDmg.toFixed(1)} dmg vs {targetHpLeft} HP remaining
+                  {modelsAfter !== null ? ` · ~${modelsAfter} model${modelsAfter !== 1 ? 's' : ''} survive` : ''}
                 </Text>
               </View>
             )}

@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Animated, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import type { Unit, WeaponProfile } from '../../types/unit';
+import type { Phase } from '../../types';
 import { colors, radii, shadows } from '../../theme/tokens';
 import { useResponsive } from '../../utils/responsive';
 import { unitTotalWounds, modelsRemaining } from '../../utils/units';
@@ -25,6 +26,8 @@ interface UnitCardProps {
   onSelectForCombat?: () => void;
   combatSelectLabel?: string;
   isAttacking?: boolean;
+  /** Active game phase — gates which weapon tables are shown. */
+  activePhase?: Phase | null;
 }
 
 const HEADER_BG = '#15203A';
@@ -266,6 +269,7 @@ export default function UnitCard({
   onSelectForCombat,
   combatSelectLabel,
   isAttacking = false,
+  activePhase,
 }: UnitCardProps) {
   const { scaleFont, select } = useResponsive();
   const scaleAnim   = useRef(new Animated.Value(1)).current;
@@ -288,6 +292,11 @@ export default function UnitCard({
   const remaining = Math.max(0, total - wounds);
   const ranged    = unit.weapons.filter(w => w.kind === 'ranged');
   const melee     = unit.weapons.filter(w => w.kind === 'melee');
+
+  // Show only weapons usable in the current phase:
+  // Shooting Phase → ranged only; Combat Phase → melee only; null → all; other → none.
+  const displayRanged = !activePhase || activePhase === 'Shooting Phase' ? ranged : [];
+  const displayMelee  = !activePhase || activePhase === 'Combat Phase'   ? melee  : [];
 
   // Unsummoned manifestation — minimal card with no flip.
   if (summonable && !summoned) {
@@ -322,7 +331,7 @@ export default function UnitCard({
       {/* Flippable section — header, stats, weapons */}
       <Animated.View style={{ transform: [{ scaleX: scaleAnim }] }}>
         {showBack ? (
-          <StatsBack unit={unit} wounds={wounds} charged={charged} hitModifier={hitModifier} onFlip={handleFlip} />
+          <StatsBack unit={unit} wounds={wounds} charged={charged} hitModifier={hitModifier} onFlip={handleFlip} activePhase={activePhase} />
         ) : (
           <TouchableOpacity onPress={handleFlip} activeOpacity={0.88}>
             {/* Header */}
@@ -388,10 +397,10 @@ export default function UnitCard({
               </View>
             )}
 
-            {/* Weapons */}
+            {/* Weapons — filtered to those usable in the active phase */}
             <View style={styles.weaponsWrap}>
-              {ranged.length > 0 && <WeaponTable title="RANGED WEAPONS" weapons={ranged} ranged />}
-              {melee.length > 0  && <WeaponTable title="MELEE WEAPONS"  weapons={melee} />}
+              {displayRanged.length > 0 && <WeaponTable title="RANGED WEAPONS" weapons={displayRanged} ranged />}
+              {displayMelee.length > 0  && <WeaponTable title="MELEE WEAPONS"  weapons={displayMelee} />}
               {unit.weapons.length === 0 && (
                 <Text style={styles.noWeapons}>No weapon profiles.</Text>
               )}
@@ -548,7 +557,9 @@ export default function UnitCard({
               activeOpacity={0.8}
             >
               <Text style={[styles.combatSelectBtnText, isAttacking && styles.combatSelectBtnTextActive]}>
-                {isAttacking ? '⚔ Attacking — tap to clear' : (combatSelectLabel ?? '⚔ Select for combat')}
+                {isAttacking
+                  ? (activePhase === 'Shooting Phase' ? '🏹 Shooting — tap to clear' : '⚔ Attacking — tap to clear')
+                  : (combatSelectLabel ?? (activePhase === 'Shooting Phase' ? '🏹 Select to shoot' : '⚔ Select for combat'))}
               </Text>
             </TouchableOpacity>
           </View>
@@ -570,12 +581,19 @@ const SAVE_TARGETS = [null, 6, 5, 4, 3, 2] as const;
 const SAVE_LABELS  = ['None', '6+', '5+', '4+', '3+', '2+'];
 
 function StatsBack({
-  unit, wounds, charged, hitModifier, onFlip,
+  unit, wounds, charged, hitModifier, onFlip, activePhase,
 }: {
   unit: Unit; wounds: number; charged: boolean; hitModifier: number; onFlip: () => void;
+  activePhase?: Phase | null;
 }) {
   const remaining = modelsRemaining(unit, wounds);
   const ctx: AttackContext = { attackerCharged: charged, hitMod: hitModifier };
+
+  // Filter to weapons usable in the current phase (mirrors the front-face logic).
+  const weaponsToShow = !activePhase ? unit.weapons
+    : activePhase === 'Shooting Phase' ? unit.weapons.filter(w => w.kind === 'ranged')
+    : activePhase === 'Combat Phase'   ? unit.weapons.filter(w => w.kind === 'melee')
+    : [];
 
   return (
     <TouchableOpacity onPress={onFlip} activeOpacity={0.88}>
@@ -601,10 +619,12 @@ function StatsBack({
       )}
 
       <View style={styles.backBody}>
-        {unit.weapons.length === 0 ? (
-          <Text style={styles.backNoWeapons}>No weapon profiles.</Text>
+        {weaponsToShow.length === 0 ? (
+          <Text style={styles.backNoWeapons}>
+            {unit.weapons.length === 0 ? 'No weapon profiles.' : 'No weapons usable in this phase.'}
+          </Text>
         ) : (
-          unit.weapons.map(w => {
+          weaponsToShow.map(w => {
             // Build hit target considering context mods
             let effectiveHitMod = ctx.hitMod;
             if (ctx.attackerCharged) {

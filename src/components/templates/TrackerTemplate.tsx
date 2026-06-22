@@ -234,6 +234,7 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
                 onToggleUnitCharged={props.onToggleUnitCharged}
                 onUnitHitModChange={props.onUnitHitModChange}
                 onUnitSaveModChange={props.onUnitSaveModChange}
+                activePhase={props.activePhase}
                 horizontalPadding={horizontalPadding}
                 cardColumns={cardColumns}
               />

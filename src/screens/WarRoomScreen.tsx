@@ -28,7 +28,6 @@ import {
   type UnitStateRow,
 } from '../utils/warRoomUnitState';
 import {
-  initClock,
   advancePhase,
   passTurn,
   CLOCK_PHASES,
@@ -76,6 +75,25 @@ type TurnScope = 'active' | 'inactive' | 'any';
  *  - "Any …", passives, generic phase timings (Start/End of Turn, Deployment)
  *    or no timing → any (relevant regardless of whose turn)
  */
+/**
+ * Like unitRelevantToPhase, but accounts for turn role: in Shooting Phase the
+ * "has ranged weapons" rule only applies to the active player. The inactive
+ * player can only fire if they have a specific ability (e.g. Covering Fire) in
+ * that phase, which is already covered by the abilityPhases check.
+ */
+function unitRelevantToPhaseForRole(
+  unit: Unit,
+  phase: Phase,
+  abilityPhases: Set<Phase> | undefined,
+  role: TurnRole,
+): boolean {
+  if (phase === 'Combat Phase') return true;
+  if (abilityPhases?.has(phase)) return true;
+  if (phase === 'Shooting Phase' && role === 'active' && unit.weapons.some(w => w.kind === 'ranged')) return true;
+  if (phase === 'Hero Phase' && (unit.isWizard || unit.isPriest)) return true;
+  return false;
+}
+
 function classifyTiming(ability: Ability): TurnScope {
   const t = (ability.timing ?? '').toLowerCase();
   if (t.includes('your')) return 'active';
@@ -161,6 +179,27 @@ export default function WarRoomScreen({
   const myPriests = myParsed.priests;
   const oppWizards = oppParsed.wizards;
   const oppPriests = oppParsed.priests;
+
+  // Which phases each unit name has abilities in — used to filter units by viewPhase.
+  const myAbilityPhasesBySource = useMemo(() => {
+    const map = new Map<string, Set<Phase>>();
+    for (const a of myAbilities) {
+      if (!a.source) continue;
+      const s = map.get(a.source) ?? new Set<Phase>();
+      s.add(a.phase); map.set(a.source, s);
+    }
+    return map;
+  }, [myAbilities]);
+
+  const oppAbilityPhasesBySource = useMemo(() => {
+    const map = new Map<string, Set<Phase>>();
+    for (const a of oppAbilities) {
+      if (!a.source) continue;
+      const s = map.get(a.source) ?? new Set<Phase>();
+      s.add(a.phase); map.set(a.source, s);
+    }
+    return map;
+  }, [oppAbilities]);
 
   // Synced per-unit state for my units; opponent's state comes from Supabase.
   const [myUnitStates, setMyUnitStates] = useState<Map<string, UnitState>>(new Map());
@@ -417,10 +456,7 @@ export default function WarRoomScreen({
           const rows = await getRoomState(room.id);
           applyRows(rows);
           await channel.track({ user_id: myId });
-          // Initialize the clock if no one has yet (conditional — first wins).
-          if (!room.activePlayerId) {
-            await initClock(room.id, room.player1Id);
-          }
+          // Clock is no longer auto-initialized here — players pick initiative first.
         }
       });
 
@@ -501,6 +537,49 @@ export default function WarRoomScreen({
 
   const atLastPhase = clock.currentPhase === CLOCK_PHASES[CLOCK_PHASES.length - 1];
 
+  async function handleInitiative(firstPlayerId: string) {
+    if (advancing || !firstPlayerId) return;
+    setAdvancing(true);
+    setClockError(null);
+    try {
+      // .is('active_player_id', null) ensures only one player wins the race —
+      // the second click is a no-op at the DB level (0 rows updated, no error).
+      const { error } = await supabase
+        .from('war_rooms')
+        .update({
+          active_player_id: firstPlayerId,
+          current_phase: 'Deployment Phase',
+          turn_number: 1,
+          phase_started_at: new Date().toISOString(),
+        })
+        .eq('id', room.id)
+        .is('active_player_id', null);
+      if (error) throw new Error(error.message);
+      // Fetch authoritative state so both players transition correctly,
+      // regardless of who won the race (realtime echo may still be in flight).
+      const { data: row, error: fetchErr } = await supabase
+        .from('war_rooms')
+        .select('active_player_id, current_phase, turn_number, phase_started_at')
+        .eq('id', room.id)
+        .single();
+      if (fetchErr) throw new Error(fetchErr.message);
+      if (row?.active_player_id) {
+        setClock({
+          activePlayerId: row.active_player_id,
+          currentPhase: (row.current_phase as Phase) ?? 'Deployment Phase',
+          turnNumber: row.turn_number ?? 1,
+          phaseStartedAt: row.phase_started_at
+            ? new Date(row.phase_started_at).getTime()
+            : Date.now(),
+        });
+      }
+    } catch (err) {
+      setClockError(err instanceof Error ? err.message : 'Could not start the game.');
+    } finally {
+      setAdvancing(false);
+    }
+  }
+
   async function toggleMine(key: string) {
     const cur = usedMap.get(stateKey(myId, key)) ?? false;
     const nextUsed = !cur;
@@ -554,14 +633,17 @@ export default function WarRoomScreen({
       onSaveModChange?: (id: string, delta: number) => void;
       onSelectForCombat?: (id: string) => void;
       attackingUnitId?: string | null;
+      activePhase?: Phase | null;
+      unitsTotal?: number;
     }
   ) {
     const sections = groupByPhase(columnAbilities);
     const { wizards = [], priests = [], units = [], terrain = [], manifestations = [],
       unitStates = new Map(), onWoundsChange, onToggleDestroyed, onToggleSummoned,
       onToggleCharged, onHitModChange, onSaveModChange, onSelectForCombat,
-      attackingUnitId: colAttackingUnitId } = colOpts ?? {};
+      attackingUnitId: colAttackingUnitId, activePhase: colActivePhase, unitsTotal: colUnitsTotal } = colOpts ?? {};
 
+    const totalUnitCount = colUnitsTotal ?? units.length;
     const destroyedTotal = units.reduce(
       (n, u) => n + (unitStates.get(u.id)?.destroyed ? 1 : 0), 0
     );
@@ -600,7 +682,7 @@ export default function WarRoomScreen({
             units={units}
             terrain={terrain}
             manifestations={manifestations}
-            unitsTotal={units.length}
+            unitsTotal={totalUnitCount}
             destroyedTotal={destroyedTotal}
             unitStates={unitStates}
             onUnitWoundsChange={onWoundsChange ?? noop}
@@ -611,6 +693,7 @@ export default function WarRoomScreen({
             onUnitSaveModChange={onSaveModChange}
             onSelectUnitForCombat={onSelectForCombat}
             attackingUnitId={colAttackingUnitId}
+            activePhase={colActivePhase}
             horizontalPadding={0}
             cardColumns={1}
           />
@@ -687,165 +770,258 @@ export default function WarRoomScreen({
         </View>
       ) : null}
 
-      {/* Shared game clock + phase selector */}
-      <View style={[styles.controls, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
-        <View style={styles.clockRow}>
-          <View style={styles.clockInfo}>
-            <Text style={styles.clockTurn}>Turn {clock.turnNumber}</Text>
-            <Text
-              style={[styles.clockWho, isMyTurn ? styles.clockWhoMine : styles.clockWhoOpp]}
-              numberOfLines={1}
-            >
-              {isMyTurn ? 'Your turn' : `${oppTitle}'s turn`}
-            </Text>
-            {clock.currentPhase ? (
-              <Text style={styles.clockPhase} numberOfLines={1}>
-                · {clock.currentPhase}
+      {!clock.activePlayerId ? (
+        /* ── Initiative picker ── */
+        <ScrollView
+          contentContainerStyle={[
+            styles.initiativeContent,
+            { maxWidth: Math.min(contentMaxWidth, 560), paddingHorizontal: padding },
+          ]}
+        >
+          <Text style={styles.initiativeHeading}>Who takes the first turn?</Text>
+          <Text style={styles.initiativeSub}>
+            Either player can decide — choose a side or roll dice.
+          </Text>
+
+          <View style={styles.initiativeCards}>
+            {/* My card */}
+            <View style={styles.initiativeCard}>
+              <Text style={styles.initiativeCardRole}>YOU</Text>
+              <Text style={styles.initiativeCardUnits}>
+                {myUnits.filter(u => !u.isTerrain && !u.isManifestation).length} units
               </Text>
-            ) : null}
-          </View>
-          <View style={styles.clockBtns}>
-            <TouchableOpacity
-              style={[styles.clockBtn, (atLastPhase || advancing) && styles.clockBtnDisabled]}
-              onPress={handleNextPhase}
-              disabled={atLastPhase || advancing}
-              activeOpacity={0.8}
-              accessibilityLabel="Next phase"
-            >
-              <Text style={styles.clockBtnText}>Next phase →</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.clockBtn, styles.clockBtnAlt, advancing && styles.clockBtnDisabled]}
-              onPress={handlePassTurn}
-              disabled={advancing}
-              activeOpacity={0.8}
-              accessibilityLabel="Pass turn"
-            >
-              <Text style={styles.clockBtnText}>Pass turn ⇄</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-        {clockError ? <Text style={styles.errorText}>{clockError}</Text> : null}
-
-        <PhaseSelector
-          phases={PHASES}
-          activePhase={viewPhase}
-          isPhaseSelectable={() => true}
-          onPhasePress={(phase) => setViewPhase((p) => (p === phase ? null : phase))}
-        />
-
-        {syncError ? <Text style={styles.errorText}>{syncError}</Text> : null}
-      </View>
-
-      {/* Narrow: You/Opponent tab. Wide: both columns side-by-side. */}
-      {!sideBySide ? (
-        <View style={[styles.tabsWrap, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
-          <View style={styles.tabs}>
-            <TouchableOpacity
-              style={[styles.tab, side === 'mine' && styles.tabActive]}
-              onPress={() => setSide('mine')}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.tabText, side === 'mine' && styles.tabTextActive]}>You</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.tab, side === 'opponent' && styles.tabActive]}
-              onPress={() => setSide('opponent')}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.tabText, side === 'opponent' && styles.tabTextActive]}>
-                {oppTitle}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : null}
-
-      {/* Combat prediction modal — shown when both attacker and target are selected */}
-      {(() => {
-        const attackerUnit = attackingUnitId ? myUnits.find(u => u.id === attackingUnitId) ?? null : null;
-        const targetUnit   = targetUnitId   ? oppParsed.units.find(u => u.id === targetUnitId) ?? null : null;
-        const attackerSt   = attackingUnitId ? (myUnitStates.get(attackingUnitId) ?? { wounds: 0, destroyed: false }) : { wounds: 0, destroyed: false };
-        const targetSt     = (targetUnitId && oppId)
-          ? (oppUnitStates.get(unitStateKey(oppId, targetUnitId)) ?? { wounds: 0, destroyed: false })
-          : { wounds: 0, destroyed: false };
-        return (
-          <CombatPredictionModal
-            visible={!!attackerUnit && !!targetUnit}
-            attacker={attackerUnit}
-            attackerState={attackerSt}
-            target={targetUnit}
-            targetState={targetSt}
-            onClose={() => { setAttackingUnitId(null); setTargetUnitId(null); }}
-          />
-        );
-      })()}
-
-      <ScrollView
-        contentContainerStyle={[
-          styles.content,
-          { maxWidth: contentMaxWidth, paddingHorizontal: padding },
-        ]}
-      >
-        {(() => {
-          const myUnitsSplit = {
-            units: myUnits.filter(u => !u.isTerrain && !u.isManifestation),
-            terrain: myUnits.filter(u => u.isTerrain && !u.isManifestation),
-            manifestations: myUnits.filter(u => u.isManifestation),
-          };
-          const oppUnits = oppParsed.units;
-          const oppUnitsSplit = {
-            units: oppUnits.filter(u => !u.isTerrain && !u.isManifestation),
-            terrain: oppUnits.filter(u => u.isTerrain && !u.isManifestation),
-            manifestations: oppUnits.filter(u => u.isManifestation),
-          };
-          // Build a unitStates map for opponent cards using oppId-prefixed keys
-          const oppStatesById = new Map<string, UnitState>();
-          oppUnitsSplit.units.concat(oppUnitsSplit.terrain, oppUnitsSplit.manifestations)
-            .forEach(u => {
-              const s = oppId ? oppUnitStates.get(unitStateKey(oppId, u.id)) : undefined;
-              if (s) oppStatesById.set(u.id, s);
-            });
-
-          const myColOpts = {
-            wizards: myWizards,
-            priests: myPriests,
-            ...myUnitsSplit,
-            unitStates: myUnitStates,
-            onWoundsChange: adjustMyUnitWounds,
-            onToggleDestroyed: toggleMyUnitDestroyed,
-            onToggleSummoned: toggleMyUnitSummoned,
-            onToggleCharged: toggleMyUnitCharged,
-            onHitModChange: adjustMyUnitHitMod,
-            onSaveModChange: adjustMyUnitSaveMod,
-            onSelectForCombat: (id: string) => setAttackingUnitId(prev => prev === id ? null : id),
-            attackingUnitId,
-          };
-          // Opponent column: read-only units, but selectable as target when I have
-          // an attacking unit chosen.
-          const oppColOpts = {
-            wizards: oppWizards,
-            priests: oppPriests,
-            ...oppUnitsSplit,
-            unitStates: oppStatesById,
-            onSelectForCombat: attackingUnitId
-              ? (id: string) => setTargetUnitId(prev => prev === id ? null : id)
-              : undefined,
-            attackingUnitId: targetUnitId,
-          };
-
-          return sideBySide ? (
-            <View style={styles.columnsRow}>
-              {renderColumn(myColumn, myId, myRole, true, 'You', false, myColOpts)}
-              {renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true, oppColOpts)}
+              <TouchableOpacity
+                style={[styles.initiativeGoBtn, advancing && styles.clockBtnDisabled]}
+                onPress={() => handleInitiative(myId)}
+                disabled={advancing}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.initiativeGoBtnText}>⚔ Go first</Text>
+              </TouchableOpacity>
             </View>
-          ) : side === 'mine' ? (
-            renderColumn(myColumn, myId, myRole, true, 'You', false, myColOpts)
-          ) : (
-            renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true, oppColOpts)
-          );
-        })()}
-      </ScrollView>
+
+            <View style={styles.initiativeVsDivider}>
+              <Text style={styles.initiativeVs}>vs</Text>
+            </View>
+
+            {/* Opponent card */}
+            <View style={styles.initiativeCard}>
+              <Text style={styles.initiativeCardRole}>
+                {opponentLabel ? `@${opponentLabel}` : 'OPPONENT'}
+              </Text>
+              <Text style={styles.initiativeCardUnits}>
+                {oppParsed.units.filter(u => !u.isTerrain && !u.isManifestation).length} units
+              </Text>
+              <TouchableOpacity
+                style={[styles.initiativeGoBtn, (!oppId || advancing) && styles.clockBtnDisabled]}
+                onPress={() => oppId && handleInitiative(oppId)}
+                disabled={!oppId || advancing}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.initiativeGoBtnText}>⚔ Go first</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.initiativeRollBtn, advancing && styles.clockBtnDisabled]}
+            onPress={() => {
+              const winner = Math.random() < 0.5 ? myId : (oppId ?? myId);
+              handleInitiative(winner);
+            }}
+            disabled={advancing}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.initiativeRollText}>🎲  Roll dice — let fate decide</Text>
+          </TouchableOpacity>
+
+          {clockError ? <Text style={styles.errorText}>{clockError}</Text> : null}
+        </ScrollView>
+      ) : (
+        <>
+          {/* Shared game clock + phase selector */}
+          <View style={[styles.controls, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
+            <View style={styles.clockRow}>
+              <View style={styles.clockInfo}>
+                <Text style={styles.clockTurn}>Turn {clock.turnNumber}</Text>
+                <Text
+                  style={[styles.clockWho, isMyTurn ? styles.clockWhoMine : styles.clockWhoOpp]}
+                  numberOfLines={1}
+                >
+                  {isMyTurn ? 'Your turn' : `${oppTitle}'s turn`}
+                </Text>
+                {clock.currentPhase ? (
+                  <Text style={styles.clockPhase} numberOfLines={1}>
+                    · {clock.currentPhase}
+                  </Text>
+                ) : null}
+              </View>
+              <View style={styles.clockBtns}>
+                <TouchableOpacity
+                  style={[styles.clockBtn, (atLastPhase || advancing) && styles.clockBtnDisabled]}
+                  onPress={handleNextPhase}
+                  disabled={atLastPhase || advancing}
+                  activeOpacity={0.8}
+                  accessibilityLabel="Next phase"
+                >
+                  <Text style={styles.clockBtnText}>Next phase →</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.clockBtn, styles.clockBtnAlt, advancing && styles.clockBtnDisabled]}
+                  onPress={handlePassTurn}
+                  disabled={advancing}
+                  activeOpacity={0.8}
+                  accessibilityLabel="Pass turn"
+                >
+                  <Text style={styles.clockBtnText}>Pass turn ⇄</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+            {clockError ? <Text style={styles.errorText}>{clockError}</Text> : null}
+
+            <PhaseSelector
+              phases={PHASES}
+              activePhase={viewPhase}
+              isPhaseSelectable={() => true}
+              onPhasePress={(phase) => setViewPhase((p) => (p === phase ? null : phase))}
+            />
+
+            {syncError ? <Text style={styles.errorText}>{syncError}</Text> : null}
+          </View>
+
+          {/* Narrow: You/Opponent tab. Wide: both columns side-by-side. */}
+          {!sideBySide ? (
+            <View style={[styles.tabsWrap, { maxWidth: contentMaxWidth, paddingHorizontal: padding }]}>
+              <View style={styles.tabs}>
+                <TouchableOpacity
+                  style={[styles.tab, side === 'mine' && styles.tabActive]}
+                  onPress={() => setSide('mine')}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.tabText, side === 'mine' && styles.tabTextActive]}>You</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.tab, side === 'opponent' && styles.tabActive]}
+                  onPress={() => setSide('opponent')}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.tabText, side === 'opponent' && styles.tabTextActive]}>
+                    {oppTitle}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : null}
+
+          {/* Combat prediction modal */}
+          {(() => {
+            const attackerUnit = attackingUnitId ? myUnits.find(u => u.id === attackingUnitId) ?? null : null;
+            const targetUnit   = targetUnitId   ? oppParsed.units.find(u => u.id === targetUnitId) ?? null : null;
+            const attackerSt   = attackingUnitId ? (myUnitStates.get(attackingUnitId) ?? { wounds: 0, destroyed: false }) : { wounds: 0, destroyed: false };
+            const targetSt     = (targetUnitId && oppId)
+              ? (oppUnitStates.get(unitStateKey(oppId, targetUnitId)) ?? { wounds: 0, destroyed: false })
+              : { wounds: 0, destroyed: false };
+            return (
+              <CombatPredictionModal
+                visible={!!attackerUnit && !!targetUnit}
+                attacker={attackerUnit}
+                attackerState={attackerSt}
+                target={targetUnit}
+                targetState={targetSt}
+                phase={viewPhase}
+                onClose={() => { setAttackingUnitId(null); setTargetUnitId(null); }}
+              />
+            );
+          })()}
+
+          <ScrollView
+            contentContainerStyle={[
+              styles.content,
+              { maxWidth: contentMaxWidth, paddingHorizontal: padding },
+            ]}
+          >
+            {(() => {
+              const myRealUnits = myUnits.filter(u => !u.isTerrain && !u.isManifestation);
+              // Inactive player's ranged units only appear in Shooting Phase after they've
+              // marked a Shooting Phase ability as used (e.g. Covering Fire).
+              const inactiveShotActivated = viewPhase === 'Shooting Phase' && myRole === 'inactive' &&
+                abilitiesForRole(myAbilities, 'inactive', 'Shooting Phase').some(a =>
+                  usedMap.get(stateKey(myId, keyForAbility(a))) ?? false
+                );
+              const myUnitsSplit = {
+                units: viewPhase
+                  ? myRealUnits.filter(u => {
+                      if (unitRelevantToPhaseForRole(u, viewPhase, myAbilityPhasesBySource.get(u.name), myRole)) return true;
+                      return inactiveShotActivated && u.weapons.some(w => w.kind === 'ranged');
+                    })
+                  : myRealUnits,
+                terrain: myUnits.filter(u => u.isTerrain && !u.isManifestation)
+                  .filter(t => !viewPhase || !!myAbilityPhasesBySource.get(t.name)?.has(viewPhase)),
+                manifestations: myUnits.filter(u => u.isManifestation),
+              };
+              const oppUnits = oppParsed.units;
+              const oppRealUnits = oppUnits.filter(u => !u.isTerrain && !u.isManifestation);
+              const oppUnitsSplit = {
+                units: (viewPhase && !attackingUnitId)
+                  ? oppRealUnits.filter(u => unitRelevantToPhaseForRole(u, viewPhase, oppAbilityPhasesBySource.get(u.name), oppRole))
+                  : oppRealUnits,
+                terrain: oppUnits.filter(u => u.isTerrain && !u.isManifestation)
+                  .filter(t => !viewPhase || !!oppAbilityPhasesBySource.get(t.name)?.has(viewPhase)),
+                manifestations: oppUnits.filter(u => u.isManifestation),
+              };
+              const oppStatesById = new Map<string, UnitState>();
+              oppUnitsSplit.units.concat(oppUnitsSplit.terrain, oppUnitsSplit.manifestations)
+                .forEach(u => {
+                  const s = oppId ? oppUnitStates.get(unitStateKey(oppId, u.id)) : undefined;
+                  if (s) oppStatesById.set(u.id, s);
+                });
+
+              const myColOpts = {
+                wizards: myWizards,
+                priests: myPriests,
+                ...myUnitsSplit,
+                unitsTotal: myRealUnits.length,
+                unitStates: myUnitStates,
+                onWoundsChange: adjustMyUnitWounds,
+                onToggleDestroyed: toggleMyUnitDestroyed,
+                onToggleSummoned: toggleMyUnitSummoned,
+                onToggleCharged: toggleMyUnitCharged,
+                onHitModChange: adjustMyUnitHitMod,
+                onSaveModChange: adjustMyUnitSaveMod,
+                onSelectForCombat: (viewPhase === 'Shooting Phase' || viewPhase === 'Combat Phase')
+                  ? (id: string) => setAttackingUnitId(prev => prev === id ? null : id)
+                  : undefined,
+                attackingUnitId,
+                activePhase: viewPhase,
+              };
+              const combatPhaseActive = viewPhase === 'Shooting Phase' || viewPhase === 'Combat Phase';
+              const oppColOpts = {
+                wizards: oppWizards,
+                priests: oppPriests,
+                ...oppUnitsSplit,
+                unitsTotal: oppRealUnits.length,
+                unitStates: oppStatesById,
+                onSelectForCombat: (combatPhaseActive && attackingUnitId)
+                  ? (id: string) => setTargetUnitId(prev => prev === id ? null : id)
+                  : undefined,
+                attackingUnitId: targetUnitId,
+                activePhase: viewPhase,
+              };
+
+              return sideBySide ? (
+                <View style={styles.columnsRow}>
+                  {renderColumn(myColumn, myId, myRole, true, 'You', false, myColOpts)}
+                  {renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true, oppColOpts)}
+                </View>
+              ) : side === 'mine' ? (
+                renderColumn(myColumn, myId, myRole, true, 'You', false, myColOpts)
+              ) : (
+                renderColumn(oppColumn, oppId, oppRole, false, oppTitle, true, oppColOpts)
+              );
+            })()}
+          </ScrollView>
+        </>
+      )}
     </View>
   );
 }
@@ -1109,5 +1285,90 @@ const styles = StyleSheet.create({
     color: '#FF8B8B',
     fontSize: 12,
     marginTop: 6,
+  },
+  // ── Initiative picker ──
+  initiativeContent: {
+    alignSelf: 'center',
+    width: '100%',
+    paddingTop: 40,
+    paddingBottom: 48,
+    gap: 24,
+  },
+  initiativeHeading: {
+    color: '#E9F0FF',
+    fontSize: 22,
+    fontWeight: '900',
+    textAlign: 'center',
+    letterSpacing: 0.3,
+  },
+  initiativeSub: {
+    color: '#7A9FBF',
+    fontSize: 14,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginTop: -16,
+  },
+  initiativeCards: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 12,
+  },
+  initiativeCard: {
+    flex: 1,
+    backgroundColor: '#0F1A2E',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#22324A',
+    padding: 20,
+    alignItems: 'center',
+    gap: 10,
+  },
+  initiativeCardRole: {
+    color: '#5BA9FF',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+  },
+  initiativeCardUnits: {
+    color: '#7A9FBF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  initiativeGoBtn: {
+    marginTop: 4,
+    backgroundColor: '#2D4E8A',
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    width: '100%',
+    alignItems: 'center',
+  },
+  initiativeGoBtnText: {
+    color: '#E9F0FF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  initiativeVsDivider: {
+    justifyContent: 'center',
+    paddingVertical: 8,
+  },
+  initiativeVs: {
+    color: '#4C6A8C',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  initiativeRollBtn: {
+    backgroundColor: '#1E2E48',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#A68B4D',
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  initiativeRollText: {
+    color: '#E9D68C',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
 });
