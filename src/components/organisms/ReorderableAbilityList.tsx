@@ -6,7 +6,6 @@ import {
   StyleSheet,
   Text,
   View,
-  type PanResponderGestureState,
 } from 'react-native';
 import type { Ability, Phase } from '../../types';
 import type { Customization } from '../../types/customization';
@@ -145,33 +144,35 @@ function SortablePhase({
   // DOM elements for every card, captured once on grant for hit-testing.
   const domNodesRef = useRef<Array<HTMLElement | null>>([]);
 
-  // A cloned ghost element appended to <body> during drag. Positioning it
-  // fixed in <body> keeps it completely outside every overflow container so
-  // it can travel anywhere on screen without being clipped.
+  // Ghost clone appended to <body> — position:fixed so no overflow container
+  // can clip it, and it can travel anywhere on screen.
   const ghostEl = useRef<HTMLElement | null>(null);
 
-  const grantPointer = useRef({ x: 0, y: 0 });
   const fromRef = useRef(0);
   const targetRef = useRef<number | null>(null);
   const snapshotRef = useRef<Ability[]>([]);
 
-  // rAF for hit-test only — position updates happen synchronously above.
-  const rafRef = useRef<number | null>(null);
-  const pendingDelta = useRef({ dx: 0, dy: 0 });
+  // Prevents double-cleanup if both native pointerup and PanResponder
+  // terminate fire for the same gesture.
+  const cleanedUpRef = useRef(true);
+  // Stored so PanResponder terminate can run backup cleanup.
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   const handlers = useRef({
-    onGrant: (_from: number, _g: PanResponderGestureState) => {},
-    onMove: (_from: number, _g: PanResponderGestureState) => {},
-    onRelease: (_from: number, _g: PanResponderGestureState | null) => {},
+    onGrant: (_from: number, _clientX: number, _clientY: number) => {},
+    onCleanup: () => {},
   });
 
-  handlers.current.onGrant = (from, g) => {
+  handlers.current.onGrant = (from, startClientX, startClientY) => {
+    cleanedUpRef.current = false;
     snapshotRef.current = [...items];
     fromRef.current = from;
     targetRef.current = from;
-    grantPointer.current = { x: g.x0, y: g.y0 };
 
-    // On web: resolve every card's raw DOM element once per drag.
+    // Web-only: use document-level pointer events so tracking continues
+    // regardless of which DOM element the pointer is over. This is the
+    // key fix — PanResponder's onMove stops updating when the pointer
+    // leaves the originating element, limiting cards to adjacent targets.
     if (Platform.OS === 'web') {
       try {
         const { findDOMNode } = require('react-dom');
@@ -182,15 +183,11 @@ function SortablePhase({
         });
         domNodesRef.current = nodes;
 
+        // Clone the card and mount as position:fixed on <body> BEFORE
+        // setDragIndex triggers a re-render that dims the original.
         const activeDom = nodes[from];
         if (activeDom) {
-          // Snapshot the card's current viewport rect BEFORE any React
-          // re-render can change its appearance.
           const rect = activeDom.getBoundingClientRect();
-
-          // Clone the card and mount it directly on <body> as a
-          // position:fixed ghost. This places it outside every
-          // overflow:hidden ancestor, so it can move anywhere on screen.
           const ghost = activeDom.cloneNode(true) as HTMLElement;
           ghost.style.position = 'fixed';
           ghost.style.left = `${rect.left}px`;
@@ -207,6 +204,68 @@ function SortablePhase({
           document.body.appendChild(ghost);
           ghostEl.current = ghost;
         }
+
+        const doHitTest = (cx: number, cy: number): number | null => {
+          const fromIdx = fromRef.current;
+          for (let i = 0; i < nodes.length; i++) {
+            if (i === fromIdx) continue;
+            const el = nodes[i];
+            if (!el) continue;
+            const r = el.getBoundingClientRect();
+            if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) {
+              return i;
+            }
+          }
+          return null;
+        };
+
+        const finishWithTarget = (to: number | null) => {
+          if (cleanedUpRef.current) return;
+          cleanedUpRef.current = true;
+          document.removeEventListener('pointermove', onMove);
+          document.removeEventListener('pointerup', onUp);
+          document.removeEventListener('pointercancel', onUp);
+          if (ghostEl.current) {
+            ghostEl.current.parentNode?.removeChild(ghostEl.current);
+            ghostEl.current = null;
+          }
+          const fromIdx = fromRef.current;
+          setDragIndex(null);
+          setTargetIndex(null);
+          onDragActiveChange(false);
+          if (to != null && to !== fromIdx && snapshotRef.current.length) {
+            const reordered = [...snapshotRef.current];
+            const [moved] = reordered.splice(fromIdx, 1);
+            reordered.splice(to, 0, moved);
+            onCommit(reordered);
+          }
+        };
+
+        const onMove = (e: PointerEvent) => {
+          if (cleanedUpRef.current) return;
+          const dx = e.clientX - startClientX;
+          const dy = e.clientY - startClientY;
+          if (ghostEl.current) {
+            ghostEl.current.style.transform =
+              `translate3d(${dx}px, ${dy}px, 0) scale(1.05)`;
+          }
+          const found = doHitTest(e.clientX, e.clientY);
+          if (found !== targetRef.current) {
+            targetRef.current = found;
+            setTargetIndex(found);
+          }
+        };
+
+        const onUp = (e: PointerEvent) => {
+          finishWithTarget(doHitTest(e.clientX, e.clientY));
+        };
+
+        // Backup for PanResponder terminate — commits last known target.
+        cleanupRef.current = () => finishWithTarget(targetRef.current);
+
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onUp);
       } catch { /* noop */ }
     }
 
@@ -215,96 +274,8 @@ function SortablePhase({
     onDragActiveChange(true);
   };
 
-  handlers.current.onMove = (_from, g) => {
-    // Move the ghost synchronously. Because it's position:fixed in <body>,
-    // translate3d is in viewport space and matches g.dx/g.dy exactly.
-    if (ghostEl.current) {
-      ghostEl.current.style.transform =
-        `translate3d(${g.dx}px, ${g.dy}px, 0) scale(1.05)`;
-    }
-
-    // Throttle the hit-test (which triggers React setState) to one call per
-    // animation frame — this doesn't affect drag position, only drop targeting.
-    pendingDelta.current = { dx: g.dx, dy: g.dy };
-    if (rafRef.current !== null) return;
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      const { dx, dy } = pendingDelta.current;
-      // px/py are pageX/pageY (document-relative). Convert to clientX/clientY
-      // (viewport-relative) so they match getBoundingClientRect() below.
-      const px = grantPointer.current.x + dx;
-      const py = grantPointer.current.y + dy;
-      const clientX = px - (window.scrollX ?? 0);
-      const clientY = py - (window.scrollY ?? 0);
-
-      let found: number | null = null;
-      const nodes = domNodesRef.current;
-      for (let i = 0; i < nodes.length; i++) {
-        if (i === fromRef.current) continue; // skip the floating active card
-        const el = nodes[i];
-        if (!el) continue;
-        const r = el.getBoundingClientRect();
-        if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
-          found = i;
-          break;
-        }
-      }
-      if (found !== null && found !== targetRef.current) {
-        targetRef.current = found;
-        setTargetIndex(found);
-      }
-    });
-  };
-
-  handlers.current.onRelease = (_, g) => {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-
-    // Fast drags can release before the last rAF fires, leaving targetRef
-    // stuck at wherever the previous rAF landed (often just an adjacent card).
-    // Run one final synchronous hit-test at the exact release position so the
-    // committed target always reflects where the user actually let go.
-    if (Platform.OS === 'web' && g && domNodesRef.current.length > 0) {
-      const px = g.x0 + g.dx;
-      const py = g.y0 + g.dy;
-      const clientX = px - (window.scrollX ?? 0);
-      const clientY = py - (window.scrollY ?? 0);
-      const from = fromRef.current;
-      const nodes = domNodesRef.current;
-      for (let i = 0; i < nodes.length; i++) {
-        if (i === from) continue;
-        const el = nodes[i];
-        if (!el) continue;
-        const r = el.getBoundingClientRect();
-        if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
-          targetRef.current = i;
-          break;
-        }
-      }
-    }
-
-    // Remove the floating ghost — React handles restoring the original card
-    // by re-rendering it without the isActive styles.
-    if (ghostEl.current) {
-      ghostEl.current.parentNode?.removeChild(ghostEl.current);
-      ghostEl.current = null;
-    }
-
-    const from = fromRef.current;
-    const to = targetRef.current;
-
-    setDragIndex(null);
-    setTargetIndex(null);
-    onDragActiveChange(false);
-
-    if (to != null && to !== from && snapshotRef.current.length) {
-      const reordered = [...snapshotRef.current];
-      const [moved] = reordered.splice(from, 1);
-      reordered.splice(to, 0, moved);
-      onCommit(reordered);
-    }
+  handlers.current.onCleanup = () => {
+    cleanupRef.current?.();
   };
 
   const columns = distributeIntoColumns(
@@ -361,9 +332,8 @@ interface DraggableCardProps {
   isDropTarget: boolean;
   setNodeRef: (node: View | null) => void;
   handlersRef: React.MutableRefObject<{
-    onGrant: (from: number, g: PanResponderGestureState) => void;
-    onMove: (from: number, g: PanResponderGestureState) => void;
-    onRelease: (from: number, g: PanResponderGestureState | null) => void;
+    onGrant: (from: number, clientX: number, clientY: number) => void;
+    onCleanup: () => void;
   }>;
 }
 
@@ -405,28 +375,36 @@ function DraggableCard({
         armedRef.current && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
       onMoveShouldSetPanResponderCapture: (_e, g) =>
         armedRef.current && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
-      onPanResponderGrant: (_e, g) => handlersRef.current.onGrant(indexRef.current, g),
-      onPanResponderMove: (_e, g) => handlersRef.current.onMove(indexRef.current, g),
-      onPanResponderRelease: (_e, g) => {
-        clearHold();
-        armedRef.current = false;
-        handlersRef.current.onRelease(indexRef.current, g);
+      onPanResponderGrant: (e, _g) => {
+        // Extract viewport-relative coordinates from the native event.
+        // These are in the same space as getBoundingClientRect(), so no
+        // conversion is needed when hit-testing against card rects.
+        const ne = e.nativeEvent as any;
+        const clientX: number =
+          ne?.clientX ?? ne?.pageX ?? ne?.touches?.[0]?.clientX ?? 0;
+        const clientY: number =
+          ne?.clientY ?? ne?.pageY ?? ne?.touches?.[0]?.clientY ?? 0;
+        handlersRef.current.onGrant(indexRef.current, clientX, clientY);
       },
-      onPanResponderTerminate: (_e, g) => {
+      // Kept active (not removed) so PanResponder retains gesture ownership
+      // and the ScrollView cannot steal the drag. Actual tracking is done
+      // by the document pointermove listeners set up in onGrant.
+      onPanResponderMove: () => {},
+      onPanResponderRelease: () => {
         clearHold();
         armedRef.current = false;
-        handlersRef.current.onRelease(indexRef.current, g ?? null);
+        handlersRef.current.onCleanup();
+      },
+      onPanResponderTerminate: () => {
+        clearHold();
+        armedRef.current = false;
+        handlersRef.current.onCleanup();
       },
       onPanResponderTerminationRequest: () => !armedRef.current,
     })
   ).current;
 
   return (
-    // Outer View: stays in layout flow (not transformed). Used for
-    // measureInWindow and PanResponder. The parent SortablePhase manipulates
-    // this node's underlying DOM element directly for zero-lag dragging.
-    // data-card-drop drives the CSS highlight (z-index 1000 !important so it
-    // renders above the floating active card at z-index 999).
     <View
       ref={setNodeRef}
       collapsable={false}
