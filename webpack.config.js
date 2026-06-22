@@ -3,11 +3,8 @@
 // Two things this file does on top of the default:
 //
 // 1. publicPath for GitHub Pages
-//    Production builds are served from https://abstracttype.github.io/AOSAbilityTracker/
-//    which means every emitted asset URL has to be absolute under the
-//    `/AOSAbilityTracker/` subpath. Without this, the bundle requests
-//    `/static/js/main.<hash>.js` and Pages 404s because the file actually
-//    lives at `/AOSAbilityTracker/static/js/main.<hash>.js`. Dev keeps '/'.
+//    The app is served from a custom domain (abilitytracker.co.uk) so assets
+//    live at the root '/'. Dev also uses '/'.
 //
 // 2. Supabase env var injection
 //    Loads .env (gitignored) for local dev, and reads from process.env in CI
@@ -18,9 +15,6 @@
 //    Both keys are SAFE to embed in the client bundle — the anon key is
 //    designed to be public, and RLS policies on the database enforce that
 //    one user can never read another user's rows. Never embed `service_role`.
-//
-// If you fork this repo to a different owner/name, change GITHUB_PAGES_BASE
-// to match `/your-repo-name/`.
 
 const path = require('path');
 const webpack = require('webpack');
@@ -31,18 +25,13 @@ const createExpoWebpackConfigAsync = require('@expo/webpack-config');
 // case in CI where vars come from the workflow's `env:` block instead).
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
-const GITHUB_PAGES_BASE = '/AOSAbilityTracker/';
-
 module.exports = async function (env, argv) {
   const config = await createExpoWebpackConfigAsync(env, argv);
 
-  // The app is served from the Pages subpath in production, root in dev. The
-  // PWA layer reads this to register the service worker at the right scope.
-  const publicUrl = env.mode === 'production' ? GITHUB_PAGES_BASE : '/';
+  // Custom domain — assets always live at the root.
+  const publicUrl = '/';
 
-  if (env.mode === 'production') {
-    config.output.publicPath = GITHUB_PAGES_BASE;
-  }
+  config.output.publicPath = '/';
 
   // Copy the PWA static files (manifest, icons, service worker) to the build
   // root so they sit alongside index.html and are served at the app's base.
