@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useRef, useState } from 'react';
+import { Animated, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import type { Unit, WeaponProfile } from '../../types/unit';
 import { colors, radii, shadows } from '../../theme/tokens';
 import { useResponsive } from '../../utils/responsive';
@@ -7,30 +7,86 @@ import { unitTotalWounds, modelsRemaining } from '../../utils/units';
 
 interface UnitCardProps {
   unit: Unit;
-  /** Wounds taken so far (from the screen's ephemeral unit state). */
   wounds: number;
-  /** Whether the unit is marked destroyed. */
   destroyed: boolean;
-  /** Adjust wounds by ±1 (screen clamps to [0, total] and syncs destroyed). */
   onWoundsChange: (delta: number) => void;
-  /** Toggle destroyed / revive. */
   onToggleDestroyed: () => void;
-  /** This is a manifestation — summoned on demand (details hidden until then). */
   summonable?: boolean;
-  /** Whether the manifestation is currently summoned. */
   summoned?: boolean;
-  /** Toggle summoned / unsummoned. */
   onToggleSummoned?: () => void;
 }
 
 const HEADER_BG = '#15203A';
-const BORDER = '#A68B4D'; // warscroll-style bronze edge, distinct from ability cards
+const BORDER = '#A68B4D';
+
+// ─── Probability helpers ──────────────────────────────────────────────────────
+
+function parseTarget(s: string | undefined): number | null {
+  const m = s?.match(/^(\d+)\+/);
+  return m ? parseInt(m[1]) : null;
+}
+
+/** P(D6 roll ≥ target). Returns 0 for impossible targets (> 6). */
+function dieProb(target: number | null): number {
+  if (target === null || target > 6) return 0;
+  return target <= 1 ? 1 : (7 - target) / 6;
+}
+
+/** Expected average of "2", "D3", "D6", "2D6", etc. */
+function avgRoll(s: string | undefined): number {
+  if (!s) return 0;
+  const fixed = parseFloat(s);
+  if (!isNaN(fixed)) return fixed;
+  const m = s.match(/^(\d+)?[Dd](\d+)$/);
+  if (m) {
+    const n = m[1] ? parseInt(m[1]) : 1;
+    const d = parseInt(m[2]);
+    return n * (d + 1) / 2;
+  }
+  return 1;
+}
+
+/** Rend magnitude: "-" → 0, "-1" → 1. */
+function parseRend(s: string | undefined): number {
+  const m = s?.match(/(\d+)/);
+  return m ? parseInt(m[1]) : 0;
+}
 
 /**
- * UnitCard — a parchment "warscroll" card for one unit: its stat line, weapon
- * profiles (melee + ranged) and an interactive footer for tracking wounds and
- * marking the unit destroyed during a game.
+ * Expected damage for one weapon's full attack sequence vs an enemy with
+ * a given save characteristic. Pass null for "no save" (unarmoured).
  */
+function weaponExpectedDmg(w: WeaponProfile, enemySave: number | null): number {
+  const pHit   = dieProb(parseTarget(w.hit));
+  const pWound = dieProb(parseTarget(w.wound));
+  const rend   = parseRend(w.rend);
+  const effSave = enemySave !== null ? enemySave + rend : 99;
+  const pSave  = dieProb(effSave <= 6 ? effSave : null);
+  return avgRoll(w.attacks) * pHit * pWound * (1 - pSave) * avgRoll(w.damage);
+}
+
+function fmtDmg(n: number): string {
+  if (n >= 10)  return n.toFixed(0);
+  if (n >= 0.1) return n.toFixed(1);
+  return '0';
+}
+
+function dmgStyle(value: number, max: number) {
+  if (max === 0) return {};
+  const r = value / max;
+  if (r >= 0.65) return { color: '#4CAF81' };  // green
+  if (r >= 0.35) return { color: '#E6B566' };  // amber
+  return { color: '#FF6B6B' };                  // red
+}
+
+function pctStyle(pct: number) {
+  if (pct >= 0.6) return { color: '#4CAF81' };
+  if (pct >= 0.35) return { color: '#E6B566' };
+  return { color: '#FF6B6B' };
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
 export default function UnitCard({
   unit,
   wounds,
@@ -42,15 +98,28 @@ export default function UnitCard({
   onToggleSummoned,
 }: UnitCardProps) {
   const { scaleFont, select } = useResponsive();
+  const scaleAnim   = useRef(new Animated.Value(1)).current;
+  const flippingRef = useRef(false);
+  const [showBack, setShowBack] = useState(false);
 
-  const total = unitTotalWounds(unit); // 0 ⇒ not wound-trackable (e.g. terrain)
+  const handleFlip = () => {
+    if (flippingRef.current) return;
+    flippingRef.current = true;
+    Animated.timing(scaleAnim, { toValue: 0, duration: 190, useNativeDriver: true }).start(() => {
+      setShowBack(s => !s);
+      Animated.timing(scaleAnim, { toValue: 1, duration: 190, useNativeDriver: true }).start(() => {
+        flippingRef.current = false;
+      });
+    });
+  };
+
+  const total     = unitTotalWounds(unit);
   const trackable = total > 0;
   const remaining = Math.max(0, total - wounds);
-  const ranged = unit.weapons.filter((w) => w.kind === 'ranged');
-  const melee = unit.weapons.filter((w) => w.kind === 'melee');
+  const ranged    = unit.weapons.filter(w => w.kind === 'ranged');
+  const melee     = unit.weapons.filter(w => w.kind === 'melee');
 
-  // A manifestation that hasn't been summoned shows only its name + a Summon
-  // button — its stats, weapons and abilities stay hidden until it's on the table.
+  // Unsummoned manifestation — minimal card with no flip.
   if (summonable && !summoned) {
     return (
       <View style={[styles.card, styles.cardNotSummoned]}>
@@ -80,85 +149,92 @@ export default function UnitCard({
 
   return (
     <View style={[styles.card, destroyed && styles.cardDestroyed]}>
-      {/* Header — name + points/models + caster tag */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Text
-            style={[styles.name, { fontSize: scaleFont(select({ mobile: 15, default: 17 })) }]}
-            numberOfLines={2}
-          >
-            {unit.name}
-          </Text>
-          {(unit.isWizard || unit.isPriest) && (
-            <View style={styles.casterTag}>
-              <Text style={styles.casterTagText}>{unit.isWizard ? 'WIZARD' : 'PRIEST'}</Text>
-            </View>
-          )}
-          {unit.reinforced && (
-            <View style={styles.reinforcedTag}>
-              <Text style={styles.reinforcedTagText}>⚑ REINFORCED</Text>
-            </View>
-          )}
-          {summonable && summoned && (
-            <View style={styles.summonedTag}>
-              <Text style={styles.summonedTagText}>✦ SUMMONED</Text>
-            </View>
-          )}
-        </View>
-        <View style={styles.headerRight}>
-          {unit.points !== undefined && <Text style={styles.points}>{unit.points} pts</Text>}
-          <Text style={styles.models}>
-            {unit.models} {unit.models === 1 ? 'model' : 'models'}
-          </Text>
-        </View>
-      </View>
-
-      {/* Stat line */}
-      <View style={styles.statRow}>
-        <Stat label="MOVE" value={unit.move} />
-        <Stat label="HEALTH" value={unit.health} />
-        <Stat label="SAVE" value={unit.save} />
-        {unit.banishment ? (
-          <Stat label="BANISH" value={unit.banishment} />
+      {/* Flippable section — header, stats, weapons */}
+      <Animated.View style={{ transform: [{ scaleX: scaleAnim }] }}>
+        {showBack ? (
+          <StatsBack unit={unit} onFlip={handleFlip} />
         ) : (
-          <Stat label="CONTROL" value={unit.control} />
-        )}
-        {unit.ward ? <Stat label="WARD" value={unit.ward} /> : null}
-      </View>
-
-      {/* Keywords tags */}
-      {unit.keywords && unit.keywords.length > 0 && (
-        <View style={styles.keywordsRow}>
-          {unit.keywords
-            .filter(kw => {
-              const lower = kw.toLowerCase();
-              // Filter out manifestation and upgrade-related keywords
-              if (lower === 'manifestation') return false;
-              if (lower.includes('regimental')) return false;
-              return true;
-            })
-            .map((kw, idx) => (
-            <View key={idx} style={styles.keywordTag}>
-              <Text style={styles.keywordText}>{kw}</Text>
+          <TouchableOpacity onPress={handleFlip} activeOpacity={0.88}>
+            {/* Header */}
+            <View style={styles.header}>
+              <View style={styles.headerLeft}>
+                <Text
+                  style={[styles.name, { fontSize: scaleFont(select({ mobile: 15, default: 17 })) }]}
+                  numberOfLines={2}
+                >
+                  {unit.name}
+                </Text>
+                {(unit.isWizard || unit.isPriest) && (
+                  <View style={styles.casterTag}>
+                    <Text style={styles.casterTagText}>{unit.isWizard ? 'WIZARD' : 'PRIEST'}</Text>
+                  </View>
+                )}
+                {unit.reinforced && (
+                  <View style={styles.reinforcedTag}>
+                    <Text style={styles.reinforcedTagText}>REINFORCED</Text>
+                  </View>
+                )}
+                {summonable && summoned && (
+                  <View style={styles.summonedTag}>
+                    <Text style={styles.summonedTagText}>SUMMONED</Text>
+                  </View>
+                )}
+              </View>
+              <View style={styles.headerRight}>
+                {unit.points !== undefined && <Text style={styles.points}>{unit.points} pts</Text>}
+                <Text style={styles.models}>
+                  {unit.models} {unit.models === 1 ? 'model' : 'models'}
+                </Text>
+                <Text style={styles.statsHint}>tap for stats</Text>
+              </View>
             </View>
-          ))}
-        </View>
-      )}
 
-      {/* Weapons */}
-      <View style={styles.weaponsWrap}>
-        {ranged.length > 0 && <WeaponTable title="RANGED WEAPONS" weapons={ranged} ranged />}
-        {melee.length > 0 && <WeaponTable title="MELEE WEAPONS" weapons={melee} />}
-        {unit.weapons.length === 0 && <Text style={styles.noWeapons}>No weapon profiles.</Text>}
-      </View>
+            {/* Stat line */}
+            <View style={styles.statRow}>
+              <Stat label="MOVE"    value={unit.move} />
+              <Stat label="HEALTH"  value={unit.health} />
+              <Stat label="SAVE"    value={unit.save} />
+              {unit.banishment
+                ? <Stat label="BANISH"  value={unit.banishment} />
+                : <Stat label="CONTROL" value={unit.control} />}
+              {unit.ward ? <Stat label="WARD" value={unit.ward} /> : null}
+            </View>
 
-      {/* Interactive footer — wounds + destroyed */}
+            {/* Keywords */}
+            {unit.keywords && unit.keywords.length > 0 && (
+              <View style={styles.keywordsRow}>
+                {unit.keywords
+                  .filter(kw => {
+                    const lower = kw.toLowerCase();
+                    if (lower === 'manifestation') return false;
+                    if (lower.includes('regimental')) return false;
+                    return true;
+                  })
+                  .map((kw, idx) => (
+                    <View key={idx} style={styles.keywordTag}>
+                      <Text style={styles.keywordText}>{kw}</Text>
+                    </View>
+                  ))}
+              </View>
+            )}
+
+            {/* Weapons */}
+            <View style={styles.weaponsWrap}>
+              {ranged.length > 0 && <WeaponTable title="RANGED WEAPONS" weapons={ranged} ranged />}
+              {melee.length > 0  && <WeaponTable title="MELEE WEAPONS"  weapons={melee} />}
+              {unit.weapons.length === 0 && (
+                <Text style={styles.noWeapons}>No weapon profiles.</Text>
+              )}
+            </View>
+          </TouchableOpacity>
+        )}
+      </Animated.View>
+
+      {/* Footer — always visible, outside the flip */}
       <View style={styles.footer}>
         {trackable ? (
           <View style={styles.woundsRow}>
             <Text style={styles.woundsLabel}>Wounds</Text>
-            {/* The value shown is wounds REMAINING, so − takes a wound (remaining
-                down) and + heals (remaining up). */}
             <TouchableOpacity
               style={styles.stepBtn}
               onPress={() => onWoundsChange(1)}
@@ -186,7 +262,9 @@ export default function UnitCard({
             )}
           </View>
         ) : (
-          <Text style={styles.woundsLabel}>{destroyed ? 'Destroyed' : 'On the battlefield'}</Text>
+          <Text style={styles.woundsLabel}>
+            {destroyed ? 'Destroyed' : 'On the battlefield'}
+          </Text>
         )}
         {summonable ? (
           <TouchableOpacity
@@ -214,12 +292,106 @@ export default function UnitCard({
   );
 }
 
-/** Remove BattleScribe formatting markers from weapon ability text. */
+// ─── Stats back face ──────────────────────────────────────────────────────────
+
+const SAVE_TARGETS = [null, 6, 5, 4, 3, 2] as const;
+const SAVE_LABELS  = ['None', '6+', '5+', '4+', '3+', '2+'];
+
+function StatsBack({ unit, onFlip }: { unit: Unit; onFlip: () => void }) {
+  return (
+    <TouchableOpacity onPress={onFlip} activeOpacity={0.88}>
+      <View style={styles.backHeader}>
+        <Text style={styles.backTitle}>ATTACK STATS</Text>
+        <Text style={styles.backFlipHint}>tap to flip back</Text>
+      </View>
+
+      <View style={styles.backBody}>
+        {unit.weapons.length === 0 ? (
+          <Text style={styles.backNoWeapons}>No weapon profiles.</Text>
+        ) : (
+          unit.weapons.map(w => {
+            const pHit    = dieProb(parseTarget(w.hit));
+            const pWound  = dieProb(parseTarget(w.wound));
+            const avgAtk  = avgRoll(w.attacks);
+            const avgWnds = avgAtk * pHit * pWound;
+            const noneVal = weaponExpectedDmg(w, null);
+            const dmgVals = SAVE_TARGETS.map(s => weaponExpectedDmg(w, s));
+
+            return (
+              <View key={w.name} style={styles.weaponStatBlock}>
+                {/* Weapon name + kind badge */}
+                <View style={styles.weaponStatHead}>
+                  <Text style={styles.weaponStatName} numberOfLines={1}>{w.name}</Text>
+                  <View style={[
+                    styles.kindBadge,
+                    w.kind === 'ranged' ? styles.rangedBadge : styles.meleeBadge,
+                  ]}>
+                    <Text style={styles.kindBadgeText}>
+                      {w.kind === 'ranged' ? 'RANGED' : 'MELEE'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Probability row */}
+                <View style={styles.probRow}>
+                  <View style={styles.probChip}>
+                    <Text style={styles.probLabel}>Hit</Text>
+                    <Text style={[styles.probValue, pctStyle(pHit)]}>
+                      {Math.round(pHit * 100)}%
+                    </Text>
+                  </View>
+                  <View style={styles.probChip}>
+                    <Text style={styles.probLabel}>Wound</Text>
+                    <Text style={[styles.probValue, pctStyle(pWound)]}>
+                      {Math.round(pWound * 100)}%
+                    </Text>
+                  </View>
+                  <View style={styles.probChip}>
+                    <Text style={styles.probLabel}>Avg wnds</Text>
+                    <Text style={[styles.probValue, { color: '#E9F0FF' }]}>
+                      {avgWnds.toFixed(1)}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Damage vs save table */}
+                <View style={styles.saveTableLabel}>
+                  <Text style={styles.saveTableLabelText}>Expected dmg vs enemy save</Text>
+                </View>
+                <View style={styles.saveHeaderRow}>
+                  {SAVE_LABELS.map(l => (
+                    <Text key={l} style={styles.saveHeaderCell}>{l}</Text>
+                  ))}
+                </View>
+                <View style={styles.saveValueRow}>
+                  {dmgVals.map((v, i) => (
+                    <Text key={i} style={[styles.saveValueCell, dmgStyle(v, noneVal)]}>
+                      {fmtDmg(v)}
+                    </Text>
+                  ))}
+                </View>
+              </View>
+            );
+          })
+        )}
+
+        {/* Ward note */}
+        {unit.weapons.length > 0 && (
+          <Text style={styles.wardNote}>
+            Ward saves reduce damage through: x0.83 for 5+ward, x0.67 for 4+ward, x0.50 for 3+ward
+          </Text>
+        )}
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
 function cleanWeaponAbilityText(text: string): string {
   return text.replace(/\*\*/g, '').replace(/\^\^/g, '');
 }
 
-/** One stat chip (label over value). */
 function Stat({ label, value }: { label: string; value?: string }) {
   return (
     <View style={styles.statChip}>
@@ -229,7 +401,6 @@ function Stat({ label, value }: { label: string; value?: string }) {
   );
 }
 
-/** A weapon group with an aligned column header and one block per weapon. */
 function WeaponTable({
   title,
   weapons,
@@ -250,7 +421,7 @@ function WeaponTable({
         <Text style={styles.weaponHeadCell}>Rnd</Text>
         <Text style={styles.weaponHeadCell}>Dmg</Text>
       </View>
-      {weapons.map((w) => (
+      {weapons.map(w => (
         <View key={w.name} style={styles.weaponBlock}>
           <Text style={styles.weaponName}>{w.name}</Text>
           <View style={styles.weaponValuesRow}>
@@ -261,12 +432,18 @@ function WeaponTable({
             <Text style={styles.weaponCell}>{w.rend}</Text>
             <Text style={styles.weaponCell}>{w.damage}</Text>
           </View>
-          {w.ability ? <Text style={styles.weaponAbility}>✦ {cleanWeaponAbilityText(w.ability)}</Text> : null}
+          {w.ability ? (
+            <Text style={styles.weaponAbility}>
+              {cleanWeaponAbilityText(w.ability)}
+            </Text>
+          ) : null}
         </View>
       ))}
     </View>
   );
 }
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   card: {
@@ -281,7 +458,8 @@ const styles = StyleSheet.create({
   cardDestroyed: {
     opacity: 0.55,
   },
-  // ---- header ----
+
+  // ── Front face ──
   header: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -329,6 +507,7 @@ const styles = StyleSheet.create({
   },
   headerRight: {
     alignItems: 'flex-end',
+    gap: 2,
   },
   points: {
     color: '#E6B566',
@@ -340,7 +519,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-  // ---- stat line ----
+  statsHint: {
+    color: '#5BA9FF',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    opacity: 0.9,
+  },
   statRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -368,7 +553,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '900',
   },
-  // ---- keywords ----
   keywordsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -387,7 +571,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
   },
-  // ---- weapons ----
   weaponsWrap: {
     paddingHorizontal: 12,
     paddingTop: 6,
@@ -448,7 +631,140 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontStyle: 'italic',
   },
-  // ---- footer ----
+
+  // ── Back face ──
+  backHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0A1220',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  backTitle: {
+    color: '#5BA9FF',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+  },
+  backFlipHint: {
+    color: '#4C6A8C',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  backBody: {
+    backgroundColor: '#0F1A2E',
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 10,
+    gap: 10,
+  },
+  backNoWeapons: {
+    color: '#4C6A8C',
+    fontSize: 12,
+    fontStyle: 'italic',
+    paddingVertical: 8,
+  },
+  weaponStatBlock: {
+    gap: 5,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(91,169,255,0.12)',
+  },
+  weaponStatHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  weaponStatName: {
+    color: '#E9F0FF',
+    fontSize: 13,
+    fontWeight: '800',
+    flex: 1,
+  },
+  kindBadge: {
+    borderRadius: radii.sm,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  meleeBadge: {
+    backgroundColor: '#5C2A2A',
+  },
+  rangedBadge: {
+    backgroundColor: '#1E4A6C',
+  },
+  kindBadgeText: {
+    color: '#E9F0FF',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  probRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  probChip: {
+    flex: 1,
+    backgroundColor: '#162030',
+    borderRadius: radii.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    alignItems: 'center',
+  },
+  probLabel: {
+    color: '#4C6A8C',
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  probValue: {
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  saveTableLabel: {
+    marginTop: 2,
+  },
+  saveTableLabelText: {
+    color: '#4C6A8C',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  saveHeaderRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(91,169,255,0.15)',
+    paddingBottom: 2,
+  },
+  saveHeaderCell: {
+    flex: 1,
+    textAlign: 'center',
+    color: '#3A5A7C',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  saveValueRow: {
+    flexDirection: 'row',
+    paddingTop: 3,
+  },
+  saveValueCell: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  wardNote: {
+    color: '#3A5A7C',
+    fontSize: 9,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    lineHeight: 13,
+    marginTop: 2,
+  },
+
+  // ── Footer ──
   footer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -511,6 +827,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
   },
+  destroyBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
   killBtn: {
     backgroundColor: colors.castingRed,
   },
@@ -523,7 +845,8 @@ const styles = StyleSheet.create({
   unsummonBtn: {
     backgroundColor: '#4C5775',
   },
-  // ---- manifestation (summon) ----
+
+  // ── Manifestation (unsummoned) ──
   cardNotSummoned: {
     borderStyle: 'dashed',
   },
@@ -563,12 +886,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontStyle: 'italic',
   },
-  destroyBtnText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
+
+  // ── Destroyed overlay ──
   destroyedTag: {
     position: 'absolute',
     top: 38,
