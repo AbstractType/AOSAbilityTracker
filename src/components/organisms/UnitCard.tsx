@@ -403,8 +403,8 @@ export default function UnitCard({
       {/* Footer — always visible, outside the flip */}
       <View style={styles.footer}>
 
-        {/* Interactive combat toggles */}
-        {onToggleCharged !== undefined && (
+        {/* Interactive combat toggles — only visible on the stats back face */}
+        {onToggleCharged !== undefined && showBack && (
           <View style={styles.toggleStrip}>
             <TouchableOpacity
               style={[styles.chargedBtn, charged && styles.chargedBtnActive]}
@@ -465,8 +465,8 @@ export default function UnitCard({
           </View>
         )}
 
-        {/* Read-only state summary (opponent cards) */}
-        {onToggleCharged === undefined && (charged || hitModifier !== 0 || saveModifier !== 0) && (
+        {/* Read-only state summary (opponent cards) — only visible on the stats back face */}
+        {onToggleCharged === undefined && showBack && (charged || hitModifier !== 0 || saveModifier !== 0) && (
           <View style={styles.readOnlyStrip}>
             {charged && (
               <View style={[styles.readOnlyChip, styles.readOnlyChipCharged]}>
