@@ -21,6 +21,13 @@ import {
   type RoomStateRow,
 } from '../utils/warRoomState';
 import {
+  getUnitStates,
+  upsertUnitState,
+  rowToUnitState,
+  unitStateKey,
+  type UnitStateRow,
+} from '../utils/warRoomUnitState';
+import {
   initClock,
   advancePhase,
   passTurn,
@@ -32,6 +39,7 @@ import PhaseSelector from '../components/organisms/PhaseSelector';
 import WizardSection from '../components/organisms/WizardSection';
 import PriestSection from '../components/organisms/PriestSection';
 import UnitSection from '../components/organisms/UnitSection';
+import CombatPredictionModal from '../components/organisms/CombatPredictionModal';
 import { colors, radii } from '../theme/tokens';
 import { useResponsive, getContentMaxWidth } from '../utils/responsive';
 
@@ -154,8 +162,18 @@ export default function WarRoomScreen({
   const oppWizards = oppParsed.wizards;
   const oppPriests = oppParsed.priests;
 
-  // Ephemeral wound/destroyed state for MY units only.
+  // Synced per-unit state for my units; opponent's state comes from Supabase.
   const [myUnitStates, setMyUnitStates] = useState<Map<string, UnitState>>(new Map());
+  const [oppUnitStates, setOppUnitStates] = useState<Map<string, UnitState>>(new Map());
+  // Combat pairing: unit I've selected to attack with (mine), and the target (opp).
+  const [attackingUnitId, setAttackingUnitId] = useState<string | null>(null);
+  const [targetUnitId, setTargetUnitId] = useState<string | null>(null);
+
+  // Upsert my unit state to Supabase (best-effort, no UI revert on failure).
+  const syncMyUnitState = useCallback((unitId: string, state: UnitState) => {
+    if (!myId) return;
+    upsertUnitState(room.id, myId, unitId, state).catch(() => {/* silent */});
+  }, [room.id, myId]);
 
   const adjustMyUnitWounds = useCallback((unitId: string, delta: number) => {
     const unit = myUnits.find(u => u.id === unitId);
@@ -167,10 +185,12 @@ export default function WarRoomScreen({
       const wounds = total > 0
         ? Math.max(0, Math.min(total, cur.wounds + delta))
         : Math.max(0, cur.wounds + delta);
-      next.set(unitId, { wounds, destroyed: total > 0 ? wounds >= total : cur.destroyed });
+      const updated = { ...cur, wounds, destroyed: total > 0 ? wounds >= total : cur.destroyed };
+      next.set(unitId, updated);
+      syncMyUnitState(unitId, updated);
       return next;
     });
-  }, [myUnits]);
+  }, [myUnits, syncMyUnitState]);
 
   const toggleMyUnitDestroyed = useCallback((unitId: string) => {
     const unit = myUnits.find(u => u.id === unitId);
@@ -179,22 +199,58 @@ export default function WarRoomScreen({
     setMyUnitStates(prev => {
       const next = new Map(prev);
       const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
-      next.set(unitId, cur.destroyed
-        ? { wounds: 0, destroyed: false }
-        : { wounds: total > 0 ? total : cur.wounds, destroyed: true }
-      );
+      const updated = cur.destroyed
+        ? { ...cur, wounds: 0, destroyed: false }
+        : { ...cur, wounds: total > 0 ? total : cur.wounds, destroyed: true };
+      next.set(unitId, updated);
+      syncMyUnitState(unitId, updated);
       return next;
     });
-  }, [myUnits]);
+  }, [myUnits, syncMyUnitState]);
 
   const toggleMyUnitSummoned = useCallback((unitId: string) => {
     setMyUnitStates(prev => {
       const next = new Map(prev);
       const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
-      next.set(unitId, { wounds: 0, destroyed: false, summoned: !cur.summoned });
+      const updated = { ...cur, wounds: 0, destroyed: false, summoned: !cur.summoned };
+      next.set(unitId, updated);
+      syncMyUnitState(unitId, updated);
       return next;
     });
-  }, []);
+  }, [syncMyUnitState]);
+
+  const toggleMyUnitCharged = useCallback((unitId: string) => {
+    setMyUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      const updated = { ...cur, charged: !cur.charged };
+      next.set(unitId, updated);
+      syncMyUnitState(unitId, updated);
+      return next;
+    });
+  }, [syncMyUnitState]);
+
+  const adjustMyUnitHitMod = useCallback((unitId: string, delta: number) => {
+    setMyUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      const updated = { ...cur, hitModifier: Math.max(-2, Math.min(2, (cur.hitModifier ?? 0) + delta)) };
+      next.set(unitId, updated);
+      syncMyUnitState(unitId, updated);
+      return next;
+    });
+  }, [syncMyUnitState]);
+
+  const adjustMyUnitSaveMod = useCallback((unitId: string, delta: number) => {
+    setMyUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      const updated = { ...cur, saveModifier: Math.max(-2, Math.min(2, (cur.saveModifier ?? 0) + delta)) };
+      next.set(unitId, updated);
+      syncMyUnitState(unitId, updated);
+      return next;
+    });
+  }, [syncMyUnitState]);
 
   // Synced used-state, keyed by `${ownerId}::${abilityKey}`.
   const [usedMap, setUsedMap] = useState<Map<string, boolean>>(new Map());
@@ -237,7 +293,7 @@ export default function WarRoomScreen({
     setViewPhase((clock.currentPhase as Phase) ?? null);
   }, [clock.currentPhase]);
 
-  // ---- Realtime: state sync + presence (unchanged from Phase 3) ----
+  // ---- Realtime: state sync + presence ----
   useEffect(() => {
     let cancelled = false;
 
@@ -247,7 +303,26 @@ export default function WarRoomScreen({
       if (!cancelled) setUsedMap(next);
     }
 
+    function applyUnitStateRows(rows: UnitStateRow[]) {
+      if (cancelled || !oppId) return;
+      const next = new Map<string, UnitState>();
+      for (const r of rows) {
+        if (r.owner_id === oppId) {
+          next.set(unitStateKey(r.owner_id, r.unit_id), rowToUnitState(r));
+        } else if (r.owner_id === myId) {
+          // Restore my own states if I rejoin mid-game.
+          setMyUnitStates(prev => {
+            const m = new Map(prev);
+            if (!m.has(r.unit_id)) m.set(r.unit_id, rowToUnitState(r));
+            return m;
+          });
+        }
+      }
+      setOppUnitStates(next);
+    }
+
     getRoomState(room.id).then(applyRows);
+    getUnitStates(room.id).then(applyUnitStateRows);
 
     const channel = supabase
       .channel(`room:${room.id}`)
@@ -275,6 +350,34 @@ export default function WarRoomScreen({
           setUsedMap((m) => {
             const n = new Map(m);
             n.set(stateKey(row.owner_id, row.ability_key), row.used);
+            return n;
+          });
+        }
+      )
+      // Opponent unit state changes (wounds, charged, modifiers).
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'war_room_unit_state',
+          filter: `room_id=eq.${room.id}`,
+        },
+        (payload) => {
+          if (cancelled) return;
+          const row = (payload.eventType === 'DELETE' ? payload.old : payload.new) as any;
+          if (!row?.owner_id || row.owner_id !== oppId) return;
+          if (payload.eventType === 'DELETE') {
+            setOppUnitStates(m => {
+              const n = new Map(m);
+              n.delete(unitStateKey(row.owner_id, row.unit_id));
+              return n;
+            });
+            return;
+          }
+          setOppUnitStates(m => {
+            const n = new Map(m);
+            n.set(unitStateKey(row.owner_id, row.unit_id), rowToUnitState(row as UnitStateRow));
             return n;
           });
         }
@@ -446,11 +549,18 @@ export default function WarRoomScreen({
       onWoundsChange?: (id: string, delta: number) => void;
       onToggleDestroyed?: (id: string) => void;
       onToggleSummoned?: (id: string) => void;
+      onToggleCharged?: (id: string) => void;
+      onHitModChange?: (id: string, delta: number) => void;
+      onSaveModChange?: (id: string, delta: number) => void;
+      onSelectForCombat?: (id: string) => void;
+      attackingUnitId?: string | null;
     }
   ) {
     const sections = groupByPhase(columnAbilities);
     const { wizards = [], priests = [], units = [], terrain = [], manifestations = [],
-      unitStates = new Map(), onWoundsChange, onToggleDestroyed, onToggleSummoned } = colOpts ?? {};
+      unitStates = new Map(), onWoundsChange, onToggleDestroyed, onToggleSummoned,
+      onToggleCharged, onHitModChange, onSaveModChange, onSelectForCombat,
+      attackingUnitId: colAttackingUnitId } = colOpts ?? {};
 
     const destroyedTotal = units.reduce(
       (n, u) => n + (unitStates.get(u.id)?.destroyed ? 1 : 0), 0
@@ -484,8 +594,8 @@ export default function WarRoomScreen({
           </View>
         )}
 
-        {/* Unit section (my column only — interactive) */}
-        {(units.length > 0 || manifestations.length > 0 || terrain.length > 0) && onWoundsChange && (
+        {/* Unit section — interactive for mine, read-only for opponent */}
+        {(units.length > 0 || manifestations.length > 0 || terrain.length > 0) && (
           <UnitSection
             units={units}
             terrain={terrain}
@@ -493,9 +603,14 @@ export default function WarRoomScreen({
             unitsTotal={units.length}
             destroyedTotal={destroyedTotal}
             unitStates={unitStates}
-            onUnitWoundsChange={onWoundsChange}
+            onUnitWoundsChange={onWoundsChange ?? noop}
             onToggleUnitDestroyed={onToggleDestroyed ?? noop}
             onToggleUnitSummoned={onToggleSummoned ?? noop}
+            onToggleUnitCharged={onToggleCharged}
+            onUnitHitModChange={onHitModChange}
+            onUnitSaveModChange={onSaveModChange}
+            onSelectUnitForCombat={onSelectForCombat}
+            attackingUnitId={colAttackingUnitId}
             horizontalPadding={0}
             cardColumns={1}
           />
@@ -646,6 +761,26 @@ export default function WarRoomScreen({
         </View>
       ) : null}
 
+      {/* Combat prediction modal — shown when both attacker and target are selected */}
+      {(() => {
+        const attackerUnit = attackingUnitId ? myUnits.find(u => u.id === attackingUnitId) ?? null : null;
+        const targetUnit   = targetUnitId   ? oppParsed.units.find(u => u.id === targetUnitId) ?? null : null;
+        const attackerSt   = attackingUnitId ? (myUnitStates.get(attackingUnitId) ?? { wounds: 0, destroyed: false }) : { wounds: 0, destroyed: false };
+        const targetSt     = (targetUnitId && oppId)
+          ? (oppUnitStates.get(unitStateKey(oppId, targetUnitId)) ?? { wounds: 0, destroyed: false })
+          : { wounds: 0, destroyed: false };
+        return (
+          <CombatPredictionModal
+            visible={!!attackerUnit && !!targetUnit}
+            attacker={attackerUnit}
+            attackerState={attackerSt}
+            target={targetUnit}
+            targetState={targetSt}
+            onClose={() => { setAttackingUnitId(null); setTargetUnitId(null); }}
+          />
+        );
+      })()}
+
       <ScrollView
         contentContainerStyle={[
           styles.content,
@@ -658,6 +793,20 @@ export default function WarRoomScreen({
             terrain: myUnits.filter(u => u.isTerrain && !u.isManifestation),
             manifestations: myUnits.filter(u => u.isManifestation),
           };
+          const oppUnits = oppParsed.units;
+          const oppUnitsSplit = {
+            units: oppUnits.filter(u => !u.isTerrain && !u.isManifestation),
+            terrain: oppUnits.filter(u => u.isTerrain && !u.isManifestation),
+            manifestations: oppUnits.filter(u => u.isManifestation),
+          };
+          // Build a unitStates map for opponent cards using oppId-prefixed keys
+          const oppStatesById = new Map<string, UnitState>();
+          oppUnitsSplit.units.concat(oppUnitsSplit.terrain, oppUnitsSplit.manifestations)
+            .forEach(u => {
+              const s = oppId ? oppUnitStates.get(unitStateKey(oppId, u.id)) : undefined;
+              if (s) oppStatesById.set(u.id, s);
+            });
+
           const myColOpts = {
             wizards: myWizards,
             priests: myPriests,
@@ -666,10 +815,23 @@ export default function WarRoomScreen({
             onWoundsChange: adjustMyUnitWounds,
             onToggleDestroyed: toggleMyUnitDestroyed,
             onToggleSummoned: toggleMyUnitSummoned,
+            onToggleCharged: toggleMyUnitCharged,
+            onHitModChange: adjustMyUnitHitMod,
+            onSaveModChange: adjustMyUnitSaveMod,
+            onSelectForCombat: (id: string) => setAttackingUnitId(prev => prev === id ? null : id),
+            attackingUnitId,
           };
+          // Opponent column: read-only units, but selectable as target when I have
+          // an attacking unit chosen.
           const oppColOpts = {
             wizards: oppWizards,
             priests: oppPriests,
+            ...oppUnitsSplit,
+            unitStates: oppStatesById,
+            onSelectForCombat: attackingUnitId
+              ? (id: string) => setTargetUnitId(prev => prev === id ? null : id)
+              : undefined,
+            attackingUnitId: targetUnitId,
           };
 
           return sideBySide ? (

@@ -40,6 +40,9 @@ interface TrackerTemplateProps {
   onUnitWoundsChange: (unitId: string, delta: number) => void;
   onToggleUnitDestroyed: (unitId: string) => void;
   onToggleUnitSummoned: (unitId: string) => void;
+  onToggleUnitCharged?: (unitId: string) => void;
+  onUnitHitModChange?: (unitId: string, delta: number) => void;
+  onUnitSaveModChange?: (unitId: string, delta: number) => void;
   /** Source-unit names that are fully destroyed (drives the "unusable" marker). */
   destroyedSources: Set<string>;
   visiblePhases: Phase[];
@@ -228,6 +231,9 @@ export default function TrackerTemplate(props: TrackerTemplateProps) {
                 onUnitWoundsChange={props.onUnitWoundsChange}
                 onToggleUnitDestroyed={props.onToggleUnitDestroyed}
                 onToggleUnitSummoned={props.onToggleUnitSummoned}
+                onToggleUnitCharged={props.onToggleUnitCharged}
+                onUnitHitModChange={props.onUnitHitModChange}
+                onUnitSaveModChange={props.onUnitSaveModChange}
                 horizontalPadding={horizontalPadding}
                 cardColumns={cardColumns}
               />

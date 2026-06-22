@@ -14,6 +14,17 @@ interface UnitCardProps {
   summonable?: boolean;
   summoned?: boolean;
   onToggleSummoned?: () => void;
+  // Combat context toggles — omit to hide the toggle row (e.g. opponent cards)
+  charged?: boolean;
+  hitModifier?: number;
+  saveModifier?: number;
+  onToggleCharged?: () => void;
+  onHitModChange?: (delta: number) => void;
+  onSaveModChange?: (delta: number) => void;
+  // War-room combat selection
+  onSelectForCombat?: () => void;
+  combatSelectLabel?: string;
+  isAttacking?: boolean;
 }
 
 const HEADER_BG = '#15203A';
@@ -81,14 +92,6 @@ function parseCritEffect(ability: string | undefined): CritEffect | null {
 }
 
 /**
- * Whether an ability tag is baked into the damage calculation (true)
- * vs. shown as a contextual note only (false).
- */
-function isFactoredAbility(tag: string): boolean {
-  return /crit\s*\(/i.test(tag);
-}
-
-/**
  * Split a comma-separated ability string like
  * "Anti-Infantry (+1 Rend), Crit (2 Hits)" into individual trimmed tags,
  * stripping BattleScribe bold/keyword markers.
@@ -101,46 +104,118 @@ function splitAbilityTags(ability: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** Context passed to weaponExpectedDmg to apply conditional weapon abilities. */
+export interface AttackContext {
+  /** This unit charged this turn — activates Charge weapon abilities. */
+  attackerCharged: boolean;
+  /** +/- modifier to the attacker's hit rolls (from unit state or spells). */
+  hitMod: number;
+  /** Target unit charged this turn — activates Anti-charge weapon abilities. */
+  targetCharged?: boolean;
+  /** Target unit's save modifier (positive = better save, e.g. cover). */
+  targetSaveMod?: number;
+  /** Target unit's keywords (uppercase) for Anti-[keyword] abilities. */
+  targetKeywords?: string[];
+}
+
+/**
+ * Classify an ability tag for display: whether it's factored into the math,
+ * potentially active (but attacker hasn't charged), or purely contextual.
+ */
+function chipStatus(
+  tag: string,
+  ctx: AttackContext,
+): 'factored' | 'potential' | 'contextual' {
+  if (/crit\s*\(/i.test(tag)) return 'factored';
+  if (/^Charge\s*\(/i.test(tag)) return ctx.attackerCharged ? 'factored' : 'potential';
+  if (/^Anti-charge\s*\(/i.test(tag)) return (ctx.targetCharged ?? false) ? 'factored' : 'contextual';
+  if (/^Anti-/i.test(tag)) return 'contextual';
+  return 'contextual';
+}
+
 /**
  * Expected damage for one weapon's full attack sequence vs an enemy with
- * a given save characteristic, incorporating Crit weapon abilities.
- * Pass null for "no save" (unarmoured).
+ * a given save characteristic, incorporating Crit and conditional weapon abilities.
+ * Pass null for "no save" (unarmoured). Pass ctx for game-state modifiers.
  */
 function weaponExpectedDmg(
   w: WeaponProfile,
   enemySave: number | null,
   modelCount = 1,
+  ctx?: AttackContext,
 ): number {
-  const pHit    = dieProb(parseTarget(w.hit));
-  const pWound  = dieProb(parseTarget(w.wound));
-  const rend    = parseRend(w.rend);
-  const effSave = enemySave !== null ? enemySave + rend : 99;
-  const pSave   = dieProb(effSave <= 6 ? effSave : null);
-  const avgDmg  = avgRoll(w.damage);
-  const avgAtks = avgRoll(w.attacks) * modelCount;
+  // ── Step 1: conditional mods from ability tags ────────────────────────────
+  let hitMod   = ctx?.hitMod ?? 0;
+  let bonusDmg = 0;
+  let bonusRend = 0;
+  let woundMod  = 0;
 
-  // pCrit is capped at pHit (can't crit if the hit roll itself fails for target>6)
-  const pCrit     = Math.min(P_CRIT, pHit);
-  const pNormHit  = pHit - pCrit;
-  const crit      = parseCritEffect(w.ability);
+  if (ctx) {
+    const tags = splitAbilityTags(w.ability);
+    for (const tag of tags) {
+      // Charge (+N Damage/Rend/to Hit)
+      if (ctx.attackerCharged) {
+        const cm = tag.match(/^Charge\s*\(\+(\d+)\s+(Damage|Rend|to\s+Hit)\)/i);
+        if (cm) {
+          const n = parseInt(cm[1]);
+          const s = cm[2].toLowerCase();
+          if (s.includes('damage')) bonusDmg += n;
+          else if (s.includes('rend')) bonusRend += n;
+          else hitMod += n;
+        }
+      }
+      // Anti-charge (+N Rend)
+      if (ctx.targetCharged) {
+        const am = tag.match(/^Anti-charge\s*\(\+(\d+)\s+Rend\)/i);
+        if (am) bonusRend += parseInt(am[1]);
+      }
+      // Anti-[keyword] (+N Rend / +N to Wound)
+      if (ctx.targetKeywords && ctx.targetKeywords.length > 0) {
+        const kr = tag.match(/^Anti-([A-Za-z][A-Za-z\s-]*?)\s*\(\+(\d+)\s+Rend\)/i);
+        if (kr) {
+          const kw = kr[1].trim().toUpperCase();
+          if (ctx.targetKeywords.includes(kw)) bonusRend += parseInt(kr[2]);
+        }
+        const kw2 = tag.match(/^Anti-([A-Za-z][A-Za-z\s-]*?)\s*\(\+(\d+)\s+to\s+Wound\)/i);
+        if (kw2) {
+          const kw = kw2[1].trim().toUpperCase();
+          if (ctx.targetKeywords.includes(kw)) woundMod += parseInt(kw2[2]);
+        }
+      }
+    }
+  }
+
+  // ── Step 2: base roll probabilities ──────────────────────────────────────
+  const hitTarget = parseTarget(w.hit);
+  const pHit = hitTarget !== null ? dieProb(Math.max(2, hitTarget - hitMod)) : 0;
+
+  const woundTarget = parseTarget(w.wound);
+  const pWound = woundTarget !== null ? dieProb(Math.max(2, woundTarget - woundMod)) : 0;
+
+  const rend     = parseRend(w.rend) + bonusRend;
+  const saveMod  = ctx?.targetSaveMod ?? 0;
+  const effSave  = enemySave !== null ? (enemySave - saveMod) + rend : 99;
+  const pSave    = dieProb(effSave <= 6 ? effSave : null);
+  const avgDmg   = avgRoll(w.damage) + bonusDmg;
+  const avgAtks  = avgRoll(w.attacks) * modelCount;
+
+  // ── Step 3: crit effect on the attack sequence ───────────────────────────
+  const pCrit    = Math.min(P_CRIT, pHit);
+  const pNormHit = pHit - pCrit;
+  const crit     = parseCritEffect(w.ability);
 
   let dmgPerAtk: number;
   switch (crit?.kind) {
     case 'extra_hit':
-      // Natural 6 → 2 hits; both proceed through wound/save normally
       dmgPerAtk = (pHit + pCrit) * pWound * (1 - pSave) * avgDmg;
       break;
     case 'mortal':
-      // Natural 6 → 1 mortal wound (save-immune), attack sequence ends
-      // Non-crit hits → normal wound/save/dmg
       dmgPerAtk = pCrit * 1 + pNormHit * pWound * (1 - pSave) * avgDmg;
       break;
     case 'auto_wound':
-      // Natural 6 → skip wound roll, go straight to save
       dmgPerAtk = (pCrit + pNormHit * pWound) * (1 - pSave) * avgDmg;
       break;
     case 'deadly':
-      // Natural 6 → N mortal wounds (save-immune), attack sequence ends
       dmgPerAtk = pCrit * crit.mortals + pNormHit * pWound * (1 - pSave) * avgDmg;
       break;
     default:
@@ -182,6 +257,15 @@ export default function UnitCard({
   summonable,
   summoned,
   onToggleSummoned,
+  charged = false,
+  hitModifier = 0,
+  saveModifier = 0,
+  onToggleCharged,
+  onHitModChange,
+  onSaveModChange,
+  onSelectForCombat,
+  combatSelectLabel,
+  isAttacking = false,
 }: UnitCardProps) {
   const { scaleFont, select } = useResponsive();
   const scaleAnim   = useRef(new Animated.Value(1)).current;
@@ -238,7 +322,7 @@ export default function UnitCard({
       {/* Flippable section — header, stats, weapons */}
       <Animated.View style={{ transform: [{ scaleX: scaleAnim }] }}>
         {showBack ? (
-          <StatsBack unit={unit} wounds={wounds} onFlip={handleFlip} />
+          <StatsBack unit={unit} wounds={wounds} charged={charged} hitModifier={hitModifier} onFlip={handleFlip} />
         ) : (
           <TouchableOpacity onPress={handleFlip} activeOpacity={0.88}>
             {/* Header */}
@@ -318,6 +402,75 @@ export default function UnitCard({
 
       {/* Footer — always visible, outside the flip */}
       <View style={styles.footer}>
+
+        {/* Combat context toggles — shown when handlers provided */}
+        {onToggleCharged !== undefined && (
+          <View style={styles.toggleRow}>
+            <TouchableOpacity
+              style={[styles.toggleChip, charged && styles.toggleChipActive]}
+              onPress={onToggleCharged}
+              activeOpacity={0.75}
+            >
+              <Text style={[styles.toggleChipText, charged && styles.toggleChipTextActive]}>
+                ⚡ Charged
+              </Text>
+            </TouchableOpacity>
+            {onHitModChange && (
+              <View style={styles.modStepper}>
+                <Text style={styles.modStepperLabel}>Hit</Text>
+                <TouchableOpacity onPress={() => onHitModChange(-1)} style={styles.modBtn} disabled={hitModifier <= -2}>
+                  <Text style={[styles.modBtnText, hitModifier <= -2 && styles.modBtnDisabled]}>−</Text>
+                </TouchableOpacity>
+                <Text style={[styles.modValue, hitModifier !== 0 && (hitModifier > 0 ? styles.modPos : styles.modNeg)]}>
+                  {hitModifier > 0 ? `+${hitModifier}` : String(hitModifier)}
+                </Text>
+                <TouchableOpacity onPress={() => onHitModChange(1)} style={styles.modBtn} disabled={hitModifier >= 2}>
+                  <Text style={[styles.modBtnText, hitModifier >= 2 && styles.modBtnDisabled]}>+</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {onSaveModChange && (
+              <View style={styles.modStepper}>
+                <Text style={styles.modStepperLabel}>Save</Text>
+                <TouchableOpacity onPress={() => onSaveModChange(-1)} style={styles.modBtn} disabled={saveModifier <= -2}>
+                  <Text style={[styles.modBtnText, saveModifier <= -2 && styles.modBtnDisabled]}>−</Text>
+                </TouchableOpacity>
+                <Text style={[styles.modValue, saveModifier !== 0 && (saveModifier > 0 ? styles.modPos : styles.modNeg)]}>
+                  {saveModifier > 0 ? `+${saveModifier}` : String(saveModifier)}
+                </Text>
+                <TouchableOpacity onPress={() => onSaveModChange(1)} style={styles.modBtn} disabled={saveModifier >= 2}>
+                  <Text style={[styles.modBtnText, saveModifier >= 2 && styles.modBtnDisabled]}>+</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* Combat state summary (read-only, for opponent cards) */}
+        {onToggleCharged === undefined && (charged || hitModifier !== 0 || saveModifier !== 0) && (
+          <View style={styles.toggleRow}>
+            {charged && (
+              <View style={[styles.toggleChip, styles.toggleChipActive]}>
+                <Text style={[styles.toggleChipText, styles.toggleChipTextActive]}>⚡ Charged</Text>
+              </View>
+            )}
+            {hitModifier !== 0 && (
+              <View style={styles.toggleChip}>
+                <Text style={styles.toggleChipText}>
+                  Hit {hitModifier > 0 ? `+${hitModifier}` : hitModifier}
+                </Text>
+              </View>
+            )}
+            {saveModifier !== 0 && (
+              <View style={styles.toggleChip}>
+                <Text style={styles.toggleChipText}>
+                  Save {saveModifier > 0 ? `+${saveModifier}` : saveModifier}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
         {trackable ? (
           <View style={styles.woundsRow}>
             <Text style={styles.woundsLabel}>Wounds</Text>
@@ -367,6 +520,19 @@ export default function UnitCard({
             <Text style={styles.destroyBtnText}>{destroyed ? 'Revive' : 'Destroy'}</Text>
           </TouchableOpacity>
         )}
+
+        {/* War-room combat selection button */}
+        {onSelectForCombat && (
+          <TouchableOpacity
+            style={[styles.combatSelectBtn, isAttacking && styles.combatSelectBtnActive]}
+            onPress={onSelectForCombat}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.combatSelectBtnText}>
+              {isAttacking ? '⚔ Attacking — tap to clear' : (combatSelectLabel ?? '⚔ Select')}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {destroyed && (
@@ -383,8 +549,13 @@ export default function UnitCard({
 const SAVE_TARGETS = [null, 6, 5, 4, 3, 2] as const;
 const SAVE_LABELS  = ['None', '6+', '5+', '4+', '3+', '2+'];
 
-function StatsBack({ unit, wounds, onFlip }: { unit: Unit; wounds: number; onFlip: () => void }) {
+function StatsBack({
+  unit, wounds, charged, hitModifier, onFlip,
+}: {
+  unit: Unit; wounds: number; charged: boolean; hitModifier: number; onFlip: () => void;
+}) {
   const remaining = modelsRemaining(unit, wounds);
+  const ctx: AttackContext = { attackerCharged: charged, hitMod: hitModifier };
 
   return (
     <TouchableOpacity onPress={onFlip} activeOpacity={0.88}>
@@ -414,13 +585,22 @@ function StatsBack({ unit, wounds, onFlip }: { unit: Unit; wounds: number; onFli
           <Text style={styles.backNoWeapons}>No weapon profiles.</Text>
         ) : (
           unit.weapons.map(w => {
-            const pHit   = dieProb(parseTarget(w.hit));
+            // Build hit target considering context mods
+            let effectiveHitMod = ctx.hitMod;
+            if (ctx.attackerCharged) {
+              splitAbilityTags(w.ability).forEach(tag => {
+                const cm = tag.match(/^Charge\s*\(\+(\d+)\s+to\s+Hit\)/i);
+                if (cm) effectiveHitMod += parseInt(cm[1]);
+              });
+            }
+            const hitTarget  = parseTarget(w.hit);
+            const pHit  = hitTarget !== null ? dieProb(Math.max(2, hitTarget - effectiveHitMod)) : 0;
             const pWound = dieProb(parseTarget(w.wound));
             const avgAtk = avgRoll(w.attacks) * remaining;
             const crit   = parseCritEffect(w.ability);
             const pCrit  = Math.min(P_CRIT, pHit);
 
-            // Effective hit rate shown in the chip — boosted by Crit (2 Hits)
+            // Effective hit rate shown in chip (Crit 2-Hits adds a bonus hit)
             const effHit = crit?.kind === 'extra_hit' ? pHit + pCrit : pHit;
 
             // Pre-save wounds incorporating crit effects
@@ -435,8 +615,8 @@ function StatsBack({ unit, wounds, onFlip }: { unit: Unit; wounds: number; onFli
                 avgWnds = avgAtk * pHit * pWound;
             }
 
-            const noneVal    = weaponExpectedDmg(w, null, remaining);
-            const dmgVals    = SAVE_TARGETS.map(s => weaponExpectedDmg(w, s, remaining));
+            const noneVal     = weaponExpectedDmg(w, null, remaining, ctx);
+            const dmgVals     = SAVE_TARGETS.map(s => weaponExpectedDmg(w, s, remaining, ctx));
             const abilityTags = splitAbilityTags(w.ability);
 
             return (
@@ -458,11 +638,22 @@ function StatsBack({ unit, wounds, onFlip }: { unit: Unit; wounds: number; onFli
                 {abilityTags.length > 0 && (
                   <View style={styles.abilityTagRow}>
                     {abilityTags.map((tag, i) => {
-                      const factored = isFactoredAbility(tag);
+                      const status = chipStatus(tag, ctx);
+                      const tagStyle = status === 'factored'
+                        ? styles.abilityTagCrit
+                        : status === 'potential'
+                          ? styles.abilityTagPotential
+                          : styles.abilityTagContextual;
+                      const textStyle = status === 'factored'
+                        ? styles.abilityTagTextCrit
+                        : status === 'potential'
+                          ? styles.abilityTagTextPotential
+                          : styles.abilityTagTextContextual;
+                      const prefix = status === 'factored' ? '✓ ' : status === 'potential' ? '⚡ ' : '';
                       return (
-                        <View key={i} style={[styles.abilityTag, factored ? styles.abilityTagCrit : styles.abilityTagContextual]}>
-                          <Text style={[styles.abilityTagText, factored ? styles.abilityTagTextCrit : styles.abilityTagTextContextual]}>
-                            {factored ? '✓ ' : ''}{tag}
+                        <View key={i} style={[styles.abilityTag, tagStyle]}>
+                          <Text style={[styles.abilityTagText, textStyle]}>
+                            {prefix}{tag}
                           </Text>
                         </View>
                       );
@@ -857,6 +1048,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#131828',
     borderColor: '#252E4A',
   },
+  abilityTagPotential: {
+    backgroundColor: '#221800',
+    borderColor: '#5C3E00',
+  },
   abilityTagText: {
     fontSize: 10,
     fontWeight: '700',
@@ -864,6 +1059,9 @@ const styles = StyleSheet.create({
   },
   abilityTagTextCrit: {
     color: '#4CAF81',
+  },
+  abilityTagTextPotential: {
+    color: '#E6B566',
   },
   abilityTagTextContextual: {
     color: '#4C6A8C',
@@ -1076,6 +1274,102 @@ const styles = StyleSheet.create({
     color: colors.textCardMuted,
     fontSize: 12,
     fontStyle: 'italic',
+  },
+
+  // ── Combat toggles row ──
+  toggleRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    width: '100%',
+    paddingBottom: 4,
+  },
+  toggleChip: {
+    backgroundColor: '#1A2236',
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: '#2E3F60',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  toggleChipActive: {
+    backgroundColor: '#3D2800',
+    borderColor: '#B87D1A',
+  },
+  toggleChipText: {
+    color: '#7A9FBF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  toggleChipTextActive: {
+    color: '#E6B566',
+  },
+  modStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#1A2236',
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: '#2E3F60',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  modStepperLabel: {
+    color: '#7A9FBF',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    marginRight: 2,
+  },
+  modBtn: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modBtnText: {
+    color: '#E9F0FF',
+    fontSize: 15,
+    fontWeight: '900',
+    lineHeight: 18,
+  },
+  modBtnDisabled: {
+    color: '#3A4A66',
+  },
+  modValue: {
+    color: '#E9F0FF',
+    fontSize: 12,
+    fontWeight: '900',
+    minWidth: 22,
+    textAlign: 'center',
+  },
+  modPos: {
+    color: '#4CAF81',
+  },
+  modNeg: {
+    color: '#FF6B6B',
+  },
+  // ── Combat select button ──
+  combatSelectBtn: {
+    backgroundColor: '#152848',
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: '#2E5A8E',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    alignSelf: 'flex-end',
+  },
+  combatSelectBtnActive: {
+    backgroundColor: '#3D1800',
+    borderColor: '#B84A1A',
+  },
+  combatSelectBtnText: {
+    color: '#5BA9FF',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.2,
   },
 
   // ── Destroyed overlay ──

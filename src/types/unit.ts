@@ -67,4 +67,10 @@ export interface UnitState {
   destroyed: boolean;
   /** Manifestations only: whether it's currently summoned onto the battlefield. */
   summoned?: boolean;
+  /** True when this unit declared a Charge this turn — activates Charge weapon abilities. */
+  charged?: boolean;
+  /** +/- modifier applied to this unit's hit rolls when attacking (-2 to +2). */
+  hitModifier?: number;
+  /** +/- modifier applied to this unit's save rolls when defending (-2 to +2). */
+  saveModifier?: number;
 }

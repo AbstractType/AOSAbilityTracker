@@ -7,26 +7,27 @@ import { radii } from '../../theme/tokens';
 import UnitCard from './UnitCard';
 
 interface UnitSectionProps {
-  /** Units to show in the grid — already phase-filtered, terrain excluded. */
   units: Unit[];
-  /** Terrain pieces, shown in their own subsection (not phase-filtered). */
   terrain: Unit[];
-  /** Manifestations, shown in their own subsection; summoned on demand. */
   manifestations: Unit[];
-  /** Total real units in the army (for the "n of total" count). */
   unitsTotal: number;
-  /** How many real units are destroyed (header badge). */
   destroyedTotal: number;
-  /** Ephemeral per-unit combat state, keyed by unit id. */
   unitStates: Map<string, UnitState>;
   onUnitWoundsChange: (unitId: string, delta: number) => void;
   onToggleUnitDestroyed: (unitId: string) => void;
   onToggleUnitSummoned: (unitId: string) => void;
   horizontalPadding: number;
   cardColumns: number;
+  // Combat context toggles — optional; when provided, toggle UI is shown on cards
+  onToggleUnitCharged?: (unitId: string) => void;
+  onUnitHitModChange?: (unitId: string, delta: number) => void;
+  onUnitSaveModChange?: (unitId: string, delta: number) => void;
+  // War-room combat selection — optional
+  onSelectUnitForCombat?: (unitId: string) => void;
+  attackingUnitId?: string | null;
 }
 
-const EMPTY_STATE: UnitState = { wounds: 0, destroyed: false };
+const EMPTY_STATE: UnitState = { wounds: 0, destroyed: false, charged: false, hitModifier: 0, saveModifier: 0 };
 
 /**
  * UnitSection — the collapsible "Units" block above the phase ability sections.
@@ -45,6 +46,11 @@ export default function UnitSection({
   onToggleUnitSummoned,
   horizontalPadding,
   cardColumns,
+  onToggleUnitCharged,
+  onUnitHitModChange,
+  onUnitSaveModChange,
+  onSelectUnitForCombat,
+  attackingUnitId,
 }: UnitSectionProps) {
   const [collapsed, setCollapsed] = useState(true);
 
@@ -65,6 +71,14 @@ export default function UnitSection({
                 summonable={summonable}
                 summoned={!!state.summoned}
                 onToggleSummoned={() => onToggleUnitSummoned(unit.id)}
+                charged={!!state.charged}
+                hitModifier={state.hitModifier ?? 0}
+                saveModifier={state.saveModifier ?? 0}
+                onToggleCharged={onToggleUnitCharged ? () => onToggleUnitCharged(unit.id) : undefined}
+                onHitModChange={onUnitHitModChange ? (d) => onUnitHitModChange(unit.id, d) : undefined}
+                onSaveModChange={onUnitSaveModChange ? (d) => onUnitSaveModChange(unit.id, d) : undefined}
+                onSelectForCombat={onSelectUnitForCombat ? () => onSelectUnitForCombat(unit.id) : undefined}
+                isAttacking={attackingUnitId === unit.id}
               />
             );
           })}

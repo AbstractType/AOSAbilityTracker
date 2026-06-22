@@ -127,26 +127,22 @@ export default function AbilityTrackerScreen({
             ? Math.max(0, Math.min(total, cur.wounds + delta))
             : Math.max(0, cur.wounds + delta);
         const destroyed = total > 0 ? wounds >= total : cur.destroyed;
-        next.set(unitId, { wounds, destroyed });
+        next.set(unitId, { ...cur, wounds, destroyed });
         return next;
       });
     },
     [units]
   );
 
-  // Summon ⇄ unsummon a manifestation. Either way it starts fresh (no wounds /
-  // not destroyed); summoning reveals its details + abilities.
   const toggleUnitSummoned = useCallback((unitId: string) => {
     setUnitStates(prev => {
       const next = new Map(prev);
       const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
-      next.set(unitId, { wounds: 0, destroyed: false, summoned: !cur.summoned });
+      next.set(unitId, { ...cur, wounds: 0, destroyed: false, summoned: !cur.summoned });
       return next;
     });
   }, []);
 
-  // Destroy ⇄ revive. Destroy fills the wound pool (if trackable); revive clears
-  // wounds and the flag.
   const toggleUnitDestroyed = useCallback(
     (unitId: string) => {
       const unit = units.find((u) => u.id === unitId);
@@ -158,14 +154,43 @@ export default function AbilityTrackerScreen({
         next.set(
           unitId,
           cur.destroyed
-            ? { wounds: 0, destroyed: false }
-            : { wounds: total > 0 ? total : cur.wounds, destroyed: true }
+            ? { ...cur, wounds: 0, destroyed: false }
+            : { ...cur, wounds: total > 0 ? total : cur.wounds, destroyed: true }
         );
         return next;
       });
     },
     [units]
   );
+
+  const toggleUnitCharged = useCallback((unitId: string) => {
+    setUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      next.set(unitId, { ...cur, charged: !cur.charged });
+      return next;
+    });
+  }, []);
+
+  const adjustUnitHitMod = useCallback((unitId: string, delta: number) => {
+    setUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      const hitModifier = Math.max(-2, Math.min(2, (cur.hitModifier ?? 0) + delta));
+      next.set(unitId, { ...cur, hitModifier });
+      return next;
+    });
+  }, []);
+
+  const adjustUnitSaveMod = useCallback((unitId: string, delta: number) => {
+    setUnitStates(prev => {
+      const next = new Map(prev);
+      const cur = next.get(unitId) ?? { wounds: 0, destroyed: false };
+      const saveModifier = Math.max(-2, Math.min(2, (cur.saveModifier ?? 0) + delta));
+      next.set(unitId, { ...cur, saveModifier });
+      return next;
+    });
+  }, []);
 
   // Only verified users can customize (notes/hide/reorder), since everything
   // persists to their account. Signed-out / unverified users never see the
@@ -516,6 +541,9 @@ export default function AbilityTrackerScreen({
         onUnitWoundsChange={adjustUnitWounds}
         onToggleUnitDestroyed={toggleUnitDestroyed}
         onToggleUnitSummoned={toggleUnitSummoned}
+        onToggleUnitCharged={toggleUnitCharged}
+        onUnitHitModChange={adjustUnitHitMod}
+        onUnitSaveModChange={adjustUnitSaveMod}
         destroyedSources={destroyedSources}
         visiblePhases={visiblePhases}
         activePhase={activePhase}
