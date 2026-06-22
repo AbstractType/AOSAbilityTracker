@@ -56,17 +56,22 @@ function parseRend(s: string | undefined): number {
  * Expected damage for one weapon's full attack sequence vs an enemy with
  * a given save characteristic. Pass null for "no save" (unarmoured).
  */
-function weaponExpectedDmg(w: WeaponProfile, enemySave: number | null): number {
-  const pHit   = dieProb(parseTarget(w.hit));
-  const pWound = dieProb(parseTarget(w.wound));
-  const rend   = parseRend(w.rend);
+function weaponExpectedDmg(
+  w: WeaponProfile,
+  enemySave: number | null,
+  modelCount = 1,
+): number {
+  const pHit    = dieProb(parseTarget(w.hit));
+  const pWound  = dieProb(parseTarget(w.wound));
+  const rend    = parseRend(w.rend);
   const effSave = enemySave !== null ? enemySave + rend : 99;
-  const pSave  = dieProb(effSave <= 6 ? effSave : null);
-  return avgRoll(w.attacks) * pHit * pWound * (1 - pSave) * avgRoll(w.damage);
+  const pSave   = dieProb(effSave <= 6 ? effSave : null);
+  return avgRoll(w.attacks) * modelCount * pHit * pWound * (1 - pSave) * avgRoll(w.damage);
 }
 
 function fmtDmg(n: number): string {
-  if (n >= 10)  return n.toFixed(0);
+  if (n >= 100) return n.toFixed(0);
+  if (n >= 10)  return n.toFixed(1);
   if (n >= 0.1) return n.toFixed(1);
   return '0';
 }
@@ -152,7 +157,7 @@ export default function UnitCard({
       {/* Flippable section — header, stats, weapons */}
       <Animated.View style={{ transform: [{ scaleX: scaleAnim }] }}>
         {showBack ? (
-          <StatsBack unit={unit} onFlip={handleFlip} />
+          <StatsBack unit={unit} wounds={wounds} onFlip={handleFlip} />
         ) : (
           <TouchableOpacity onPress={handleFlip} activeOpacity={0.88}>
             {/* Header */}
@@ -297,13 +302,31 @@ export default function UnitCard({
 const SAVE_TARGETS = [null, 6, 5, 4, 3, 2] as const;
 const SAVE_LABELS  = ['None', '6+', '5+', '4+', '3+', '2+'];
 
-function StatsBack({ unit, onFlip }: { unit: Unit; onFlip: () => void }) {
+function StatsBack({ unit, wounds, onFlip }: { unit: Unit; wounds: number; onFlip: () => void }) {
+  const remaining = modelsRemaining(unit, wounds);
+
   return (
     <TouchableOpacity onPress={onFlip} activeOpacity={0.88}>
       <View style={styles.backHeader}>
         <Text style={styles.backTitle}>ATTACK STATS</Text>
         <Text style={styles.backFlipHint}>tap to flip back</Text>
       </View>
+
+      {/* Model strength context — only meaningful for multi-model units */}
+      {unit.models > 1 && (
+        <View style={styles.modelStrengthRow}>
+          <Text style={styles.modelStrengthText}>
+            {remaining < unit.models
+              ? `${remaining} of ${unit.models} models remaining`
+              : `${unit.models} models at full strength`}
+          </Text>
+          {remaining < unit.models && (
+            <Text style={styles.modelStrengthLost}>
+              {unit.models - remaining} lost
+            </Text>
+          )}
+        </View>
+      )}
 
       <View style={styles.backBody}>
         {unit.weapons.length === 0 ? (
@@ -312,10 +335,10 @@ function StatsBack({ unit, onFlip }: { unit: Unit; onFlip: () => void }) {
           unit.weapons.map(w => {
             const pHit    = dieProb(parseTarget(w.hit));
             const pWound  = dieProb(parseTarget(w.wound));
-            const avgAtk  = avgRoll(w.attacks);
+            const avgAtk  = avgRoll(w.attacks) * remaining;
             const avgWnds = avgAtk * pHit * pWound;
-            const noneVal = weaponExpectedDmg(w, null);
-            const dmgVals = SAVE_TARGETS.map(s => weaponExpectedDmg(w, s));
+            const noneVal = weaponExpectedDmg(w, null, remaining);
+            const dmgVals = SAVE_TARGETS.map(s => weaponExpectedDmg(w, s, remaining));
 
             return (
               <View key={w.name} style={styles.weaponStatBlock}>
@@ -651,6 +674,25 @@ const styles = StyleSheet.create({
     color: '#4C6A8C',
     fontSize: 10,
     fontWeight: '600',
+  },
+  modelStrengthRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0C1628',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    gap: 8,
+  },
+  modelStrengthText: {
+    color: '#7A9FBF',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  modelStrengthLost: {
+    color: '#C0504D',
+    fontSize: 10,
+    fontWeight: '700',
   },
   backBody: {
     backgroundColor: '#0F1A2E',
