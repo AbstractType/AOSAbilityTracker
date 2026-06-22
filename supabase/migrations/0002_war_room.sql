@@ -1,11 +1,12 @@
 -- Phase 2 — Challenges + War Rooms (in-app, no live usage sync yet)
 --
 -- Run this in the Supabase SQL Editor AFTER 0001_profiles.sql.
+-- Idempotent: safe to re-run at any time.
 
 -- ---------------------------------------------------------------------------
 -- war_rooms: created when a challenge is accepted. Holds both players' armies.
 -- ---------------------------------------------------------------------------
-create table public.war_rooms (
+create table if not exists public.war_rooms (
   id uuid primary key default gen_random_uuid(),
   player1_id uuid not null references auth.users (id) on delete cascade,   -- challenger
   player1_army_json text not null,
@@ -19,17 +20,27 @@ alter table public.war_rooms enable row level security;
 -- Only the two players may read/update their room. Inserts happen exclusively
 -- through accept_challenge() (security definer), so no INSERT policy is needed
 -- for clients.
-create policy "war_rooms_select_players" on public.war_rooms
-  for select using (auth.uid() in (player1_id, player2_id));
-create policy "war_rooms_update_players" on public.war_rooms
-  for update using (auth.uid() in (player1_id, player2_id));
+do $$ begin
+  create policy "war_rooms_select_players" on public.war_rooms
+    for select using (auth.uid() in (player1_id, player2_id));
+exception when duplicate_object then null;
+end $$;
+
+do $$ begin
+  create policy "war_rooms_update_players" on public.war_rooms
+    for update using (auth.uid() in (player1_id, player2_id));
+exception when duplicate_object then null;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- challenges
 -- ---------------------------------------------------------------------------
-create type challenge_status as enum ('pending', 'accepted', 'declined', 'cancelled', 'expired');
+do $$ begin
+  create type challenge_status as enum ('pending', 'accepted', 'declined', 'cancelled', 'expired');
+exception when duplicate_object then null;
+end $$;
 
-create table public.challenges (
+create table if not exists public.challenges (
   id uuid primary key default gen_random_uuid(),
   challenger_id uuid not null references auth.users (id) on delete cascade default auth.uid(),
   challenger_username citext not null,        -- denormalized so the opponent can show who challenged them
@@ -47,18 +58,29 @@ alter table public.challenges enable row level security;
 -- A user can see challenges they sent, ones targeted at them (by id or email).
 -- The invite_token is deliberately NOT a path here — link-join goes through an
 -- RPC (Phase 4) so the table can't be token-scraped.
-create policy "challenges_select_involved" on public.challenges
-  for select using (
-    auth.uid() = challenger_id
-    or auth.uid() = opponent_id
-    or opponent_email = (auth.jwt() ->> 'email')::citext
-  );
-create policy "challenges_insert_challenger" on public.challenges
-  for insert with check (auth.uid() = challenger_id);
+do $$ begin
+  create policy "challenges_select_involved" on public.challenges
+    for select using (
+      auth.uid() = challenger_id
+      or auth.uid() = opponent_id
+      or opponent_email = (auth.jwt() ->> 'email')::citext
+    );
+exception when duplicate_object then null;
+end $$;
+
+do $$ begin
+  create policy "challenges_insert_challenger" on public.challenges
+    for insert with check (auth.uid() = challenger_id);
+exception when duplicate_object then null;
+end $$;
+
 -- Cancel (challenger) / decline (opponent) are client UPDATEs; accept goes
 -- through the RPC. Both involved parties may update.
-create policy "challenges_update_involved" on public.challenges
-  for update using (auth.uid() = challenger_id or auth.uid() = opponent_id);
+do $$ begin
+  create policy "challenges_update_involved" on public.challenges
+    for update using (auth.uid() = challenger_id or auth.uid() = opponent_id);
+exception when duplicate_object then null;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- accept_challenge: atomically create the room (with BOTH players + armies),
@@ -107,4 +129,7 @@ grant execute on function public.accept_challenge(uuid, text) to authenticated;
 -- replica identity full so UPDATE payloads carry the whole row (status/room_id).
 -- ---------------------------------------------------------------------------
 alter table public.challenges replica identity full;
-alter publication supabase_realtime add table public.challenges;
+do $$ begin
+  alter publication supabase_realtime add table public.challenges;
+exception when others then null;
+end $$;

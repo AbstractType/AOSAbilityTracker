@@ -1,8 +1,7 @@
 -- Phase 1 — Identity: profiles + username search
 --
--- Run this in the Supabase SQL Editor (Dashboard → SQL Editor → New query).
--- Idempotent-ish: safe to re-run except the CREATE TABLE (which errors if it
--- already exists — drop it first if you need to reapply during development).
+-- Run in the Supabase SQL Editor (Dashboard → SQL Editor → New query).
+-- Idempotent: safe to re-run at any time.
 
 -- citext gives case-insensitive usernames without manual lower() everywhere.
 create extension if not exists citext;
@@ -10,7 +9,7 @@ create extension if not exists citext;
 -- ---------------------------------------------------------------------------
 -- profiles: one row per user, holding their public-facing username.
 -- ---------------------------------------------------------------------------
-create table public.profiles (
+create table if not exists public.profiles (
   user_id uuid primary key references auth.users (id) on delete cascade,
   -- 3–20 chars, lowercase letters / digits / underscore. Unique (citext = CI).
   username citext unique not null
@@ -26,12 +25,23 @@ alter table public.profiles enable row level security;
 -- that would let anyone scrape the whole user list. Discovery happens through
 -- the search_users() RPC below, which is rate-limited by a min query length
 -- and a hard LIMIT.
-create policy "profiles_select_own" on public.profiles
-  for select using (auth.uid() = user_id);
-create policy "profiles_insert_own" on public.profiles
-  for insert with check (auth.uid() = user_id);
-create policy "profiles_update_own" on public.profiles
-  for update using (auth.uid() = user_id);
+do $$ begin
+  create policy "profiles_select_own" on public.profiles
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null;
+end $$;
+
+do $$ begin
+  create policy "profiles_insert_own" on public.profiles
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null;
+end $$;
+
+do $$ begin
+  create policy "profiles_update_own" on public.profiles
+    for update using (auth.uid() = user_id);
+exception when duplicate_object then null;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- search_users: find other players by username prefix.
